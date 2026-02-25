@@ -75,7 +75,7 @@ describe("config path resolution", () => {
 });
 
 describe("config validation", () => {
-  test("applies default prefix and resolves baseDir", () => {
+  test("applies default harness and resolves baseDir", () => {
     const cwd = tempDir("houston-config-");
     const config = validateConfig(
       {
@@ -85,8 +85,36 @@ describe("config validation", () => {
       cwd,
     );
 
-    expect(config.channelPrefix).toBe("cc-");
+    expect(config.defaultHarness).toBe("claude");
     expect(config.baseDir).toBe(path.join(cwd, "projects"));
+  });
+
+  test("accepts explicit defaultHarness", () => {
+    const cwd = tempDir("houston-config-");
+    const config = validateConfig(
+      {
+        token: "test-token",
+        baseDir: "./projects",
+        defaultHarness: "gemini",
+      },
+      cwd,
+    );
+
+    expect(config.defaultHarness).toBe("gemini");
+  });
+
+  test("falls back to claude for invalid defaultHarness", () => {
+    const cwd = tempDir("houston-config-");
+    const config = validateConfig(
+      {
+        token: "test-token",
+        baseDir: "./projects",
+        defaultHarness: "invalid",
+      },
+      cwd,
+    );
+
+    expect(config.defaultHarness).toBe("claude");
   });
 
   test("throws on missing token", () => {
@@ -105,7 +133,7 @@ describe("config validation", () => {
       filePath,
       JSON.stringify({
         token: "abc",
-        channelPrefix: "cc-",
+        defaultHarness: "claude",
         baseDir: "/tmp/projects",
       }),
       "utf8",
@@ -114,5 +142,6 @@ describe("config validation", () => {
     const config = loadConfigFromPath(filePath, "/");
     expect(config.token).toBe("abc");
     expect(config.baseDir).toBe("/tmp/projects");
+    expect(config.defaultHarness).toBe("claude");
   });
 });

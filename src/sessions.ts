@@ -1,10 +1,13 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import type { HarnessName } from "./harness";
 
 export interface SessionStateEntry {
   sessionId: string;
   lastUsed: string;
   editMode?: boolean;
+  projectDir?: string;
+  harness?: HarnessName;
 }
 
 export type SessionState = Record<string, SessionStateEntry>;
@@ -36,6 +39,8 @@ export function loadSessions(filePath: string): SessionState {
         sessionId: entry.sessionId,
         lastUsed: typeof entry.lastUsed === "string" ? entry.lastUsed : new Date().toISOString(),
         editMode: entry.editMode === true ? true : undefined,
+        projectDir: typeof entry.projectDir === "string" ? entry.projectDir : undefined,
+        harness: entry.harness === "claude" || entry.harness === "gemini" ? entry.harness : undefined,
       };
     }
 
@@ -70,7 +75,13 @@ export function setSession(
   lastUsed = new Date().toISOString(),
 ): void {
   const existing = sessions[channelId];
-  sessions[channelId] = { sessionId, lastUsed, editMode: existing?.editMode };
+  sessions[channelId] = {
+    sessionId,
+    lastUsed,
+    editMode: existing?.editMode,
+    projectDir: existing?.projectDir,
+    harness: existing?.harness,
+  };
 }
 
 export function setEditMode(sessions: SessionState, channelId: string, editMode: boolean): void {
@@ -79,6 +90,26 @@ export function setEditMode(sessions: SessionState, channelId: string, editMode:
     existing.editMode = editMode || undefined;
   } else {
     sessions[channelId] = { sessionId: "", lastUsed: new Date().toISOString(), editMode: editMode || undefined };
+  }
+}
+
+export function setProjectDir(sessions: SessionState, channelId: string, projectDir: string): void {
+  const existing = sessions[channelId];
+  if (existing) {
+    existing.projectDir = projectDir;
+    existing.sessionId = "";
+  } else {
+    sessions[channelId] = { sessionId: "", lastUsed: new Date().toISOString(), projectDir };
+  }
+}
+
+export function setHarness(sessions: SessionState, channelId: string, harness: HarnessName): void {
+  const existing = sessions[channelId];
+  if (existing) {
+    existing.harness = harness;
+    existing.sessionId = "";
+  } else {
+    sessions[channelId] = { sessionId: "", lastUsed: new Date().toISOString(), harness };
   }
 }
 

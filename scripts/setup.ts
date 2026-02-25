@@ -9,6 +9,8 @@ import { parseSetupFlags } from "../src/setup-flags";
 import { resetConfigAndSessions } from "../src/setup-reset";
 import { buildBotInviteUrl, isValidDiscordId, looksLikeDiscordToken } from "../src/setup-utils";
 
+const SUPPORTED_HARNESSES = ["claude", "gemini"] as const;
+
 function withDefault(value: string, fallback: string): string {
   return value.trim().length > 0 ? value.trim() : fallback;
 }
@@ -121,8 +123,7 @@ async function main(): Promise<void> {
       console.log("Discord cleanup checklist:");
       console.log("1. Server Settings > Integrations > Bots and Apps, remove Houston bot if no longer needed.");
       console.log("2. Discord Developer Portal > Bot, reset token if credentials were exposed.");
-      console.log("3. Delete or archive old cc-* channels you no longer use.");
-      console.log("4. Review channel permissions so only trusted members can post in cc-* channels.");
+      console.log("3. Review channel permissions so only trusted members can post.");
 
       if (flags.resetOnly) {
         console.log("Reset only mode finished.");
@@ -183,8 +184,16 @@ async function main(): Promise<void> {
     const configPathInput = await ask(`Config path [${defaultConfig}]: `);
     const configPath = path.resolve(expandHomePath(withDefault(configPathInput, defaultConfig)));
 
-    const prefixInput = await ask(`Channel prefix [${defaults.channelPrefix}]: `);
-    const channelPrefix = withDefault(prefixInput, defaults.channelPrefix);
+    console.log("");
+    console.log(`Default harness: ${SUPPORTED_HARNESSES.join(", ")}`);
+    const harnessInput = await ask(`Default harness [${defaults.defaultHarness}]: `);
+    const defaultHarness = withDefault(harnessInput, defaults.defaultHarness);
+    if (!SUPPORTED_HARNESSES.includes(defaultHarness as typeof SUPPORTED_HARNESSES[number])) {
+      console.log(`Warning: "${defaultHarness}" is not a recognized harness. Using "${defaults.defaultHarness}".`);
+    }
+    const harness = SUPPORTED_HARNESSES.includes(defaultHarness as typeof SUPPORTED_HARNESSES[number])
+      ? defaultHarness
+      : defaults.defaultHarness;
 
     let baseDir: string;
     while (true) {
@@ -202,7 +211,7 @@ async function main(): Promise<void> {
       {
         token,
         applicationId,
-        channelPrefix,
+        defaultHarness: harness,
         baseDir,
       },
       null,

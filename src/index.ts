@@ -1,27 +1,37 @@
-import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { buildClaudeArgs, ClaudeProcessError, ClaudeTimeoutError, isUuid, runClaude, type StreamJsonEvent } from "./claude";
+import { HarnessProcessError, HarnessTimeoutError, runHarness, type StreamJsonEvent } from "./harness";
 import { loadConfig, missingConfigErrorMessage } from "./config";
+import { getDriver, isHarnessName } from "./drivers";
 import { ChannelQueue } from "./queue";
-import { ensureConfigFilePermissions, loadSessions, saveSessions, setEditMode, setSession } from "./sessions";
+import { ensureConfigFilePermissions, loadSessions, saveSessions, setEditMode, setHarness, setProjectDir, setSession } from "./sessions";
 
 const DISCORD_CHAR_LIMIT = 2000;
 
 export type HoustonCommand =
   | { type: "edit"; enabled: boolean }
-  | { type: "status" };
+  | { type: "status" }
+  | { type: "setup"; projectName: string }
+  | { type: "harness"; harnessName: string }
+  | { type: "persona"; description: string };
 
 export function parseCommand(prompt: string): HoustonCommand | null {
   const trimmed = prompt.trim();
   if (trimmed === "/edit on") return { type: "edit", enabled: true };
   if (trimmed === "/edit off") return { type: "edit", enabled: false };
   if (trimmed === "/status") return { type: "status" };
-  return null;
-}
 
-export interface ProjectRoute {
-  slug: string;
-  projectDir: string;
+  const setupMatch = trimmed.match(/^\/setup\s+(.+)$/);
+  if (setupMatch) return { type: "setup", projectName: setupMatch[1].trim() };
+
+  const harnessMatch = trimmed.match(/^\/harness\s+(.+)$/);
+  if (harnessMatch) return { type: "harness", harnessName: harnessMatch[1].trim() };
+
+  if (trimmed === "/persona" || trimmed === "/persona clear") return { type: "persona", description: "" };
+  const personaMatch = trimmed.match(/^\/persona\s+(.+)$/);
+  if (personaMatch) return { type: "persona", description: personaMatch[1].trim() };
+
+  return null;
 }
 
 export function stripBotMention(
@@ -54,26 +64,71 @@ export function isSubPath(baseDir: string, targetDir: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-export function resolveProjectRoute(
-  channelName: string,
-  channelPrefix: string,
-  baseDir: string,
-): ProjectRoute | null {
-  if (!channelName.startsWith(channelPrefix)) {
-    return null;
+const PROJECT_NAME_REGEX = /^[a-z0-9][a-z0-9._-]*$/;
+
+export function isValidProjectName(name: string): boolean {
+  return PROJECT_NAME_REGEX.test(name) && !name.includes("..");
+}
+
+export function sanitizeChannelName(name: string): string | null {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (!slug || !isValidProjectName(slug)) return null;
+  return slug;
+}
+
+export function scaffoldProject(projectDir: string, projectName: string, channelName?: string): void {
+  mkdirSync(projectDir, { recursive: true });
+
+  const agentsPath = path.join(projectDir, "AGENTS.md");
+  if (!existsSync(agentsPath)) {
+    const label = channelName ? ` from Discord channel #${channelName}` : "";
+    writeFileSync(agentsPath, `# ${projectName}\n\nProject created by Houston${label}.\n`);
   }
 
-  const slug = channelName.slice(channelPrefix.length).trim();
-  if (!slug) {
-    return null;
+  for (const name of ["CLAUDE.md", "GEMINI.md"]) {
+    const linkPath = path.join(projectDir, name);
+    if (!existsSync(linkPath)) {
+      symlinkSync("AGENTS.md", linkPath);
+    }
+  }
+}
+
+const PERSONA_SECTION_REGEX = /\n## Persona\n[\s\S]*?(?=\n## |\n*$)/;
+
+export function buildPersonaPrompt(description: string): string {
+  return [
+    "Write a persona instruction for an AI coding assistant's system prompt.",
+    `The persona: "${description}"`,
+    "",
+    "Requirements:",
+    "- 2-4 sentences defining personality, tone, and communication style",
+    "- Be specific about mannerisms, vocabulary, and voice",
+    "- The persona should be fun but must never compromise helpfulness or accuracy",
+    "- Output ONLY the persona text, no headers, no markdown formatting, no preamble",
+  ].join("\n");
+}
+
+export function updatePersona(agentsPath: string, description: string): void {
+  const content = existsSync(agentsPath) ? readFileSync(agentsPath, "utf8") : "";
+
+  if (!description) {
+    // Clear persona
+    const cleared = content.replace(PERSONA_SECTION_REGEX, "");
+    writeFileSync(agentsPath, cleared.trimEnd() + "\n");
+    return;
   }
 
-  const projectDir = path.resolve(baseDir, slug);
-  if (!isSubPath(baseDir, projectDir)) {
-    return null;
-  }
+  const section = `\n## Persona\n\n${description}\n`;
 
-  return { slug, projectDir };
+  if (PERSONA_SECTION_REGEX.test(content)) {
+    writeFileSync(agentsPath, content.replace(PERSONA_SECTION_REGEX, section).trimEnd() + "\n");
+  } else {
+    writeFileSync(agentsPath, content.trimEnd() + "\n" + section);
+  }
 }
 
 export function splitDiscordMessage(input: string, maxLength = DISCORD_CHAR_LIMIT): string[] {
@@ -155,13 +210,13 @@ function startTypingLoop(channel: { sendTyping: () => Promise<unknown> }): () =>
 }
 
 function formatCommandError(error: unknown): string {
-  if (error instanceof ClaudeTimeoutError) {
-    return `Claude timed out after ${Math.floor(error.timeoutMs / 1000)} seconds.`;
+  if (error instanceof HarnessTimeoutError) {
+    return `Process timed out after ${Math.floor(error.timeoutMs / 1000)} seconds.`;
   }
 
-  if (error instanceof ClaudeProcessError) {
+  if (error instanceof HarnessProcessError) {
     const body = error.details.length > 0 ? error.details.join("\n") : "No details returned.";
-    return `Claude exited with code ${error.exitCode}\n${body}`;
+    return `Exited with code ${error.exitCode}\n${body}`;
   }
 
   if (error instanceof Error) {
@@ -205,7 +260,7 @@ export async function start(): Promise<void> {
     console.log(`Houston online as ${client.user?.tag ?? "unknown user"}`);
     console.log(`Config path: ${paths.configPath}`);
     console.log(`Sessions path: ${paths.sessionsPath}`);
-    console.log(`Channel prefix: ${config.channelPrefix}`);
+    console.log(`Default harness: ${config.defaultHarness}`);
     console.log(`Base directory: ${config.baseDir}`);
     if (verbose) console.log("Verbose logging enabled");
   });
@@ -236,68 +291,179 @@ export async function start(): Promise<void> {
       return;
     }
 
-    if (typeof channelName !== "string") {
-      return;
-    }
-
-    const route = resolveProjectRoute(channelName, config.channelPrefix, config.baseDir);
-    if (!route) {
-      log(`Skipped: channel #${channelName} does not match prefix "${config.channelPrefix}"`);
-      return;
-    }
-
-    log(`Routed to project: ${route.slug} (${route.projectDir})`);
-    log(`Prompt: ${prompt.slice(0, 200)}`);
-
     const command = parseCommand(prompt);
-    if (command) {
-      if (command.type === "edit") {
-        setEditMode(sessions, message.channelId, command.enabled);
-        saveSessions(paths.sessionsPath, sessions);
-        const label = command.enabled
-          ? "Edit mode enabled. Claude can now modify files."
-          : "Edit mode disabled.";
-        await message.reply(label);
+
+    // /setup command: bind channel to a project
+    if (command?.type === "setup") {
+      const projectName = command.projectName;
+      if (!isValidProjectName(projectName)) {
+        await message.reply("Invalid project name. Use lowercase letters, numbers, hyphens, dots, or underscores.");
         return;
       }
 
-      if (command.type === "status") {
-        const entry = sessions[message.channelId];
-        const editLabel = entry?.editMode ? "on" : "off";
-        const sessionLabel = entry?.sessionId || "none";
-        await message.reply(
-          `**Edit mode:** ${editLabel}\n**Session:** ${sessionLabel}\n**Project:** ${route.projectDir}`,
-        );
+      const projectDir = path.resolve(config.baseDir, projectName);
+      if (!isSubPath(config.baseDir, projectDir)) {
+        await message.reply("Invalid project name.");
         return;
       }
+
+      if (!existsSync(projectDir)) {
+        scaffoldProject(projectDir, projectName, channelName);
+        console.log(`Created project directory: ${projectDir}`);
+      } else if (!statSync(projectDir).isDirectory()) {
+        await message.reply(`Project path exists but is not a directory: \`${projectDir}\``);
+        return;
+      }
+
+      setProjectDir(sessions, message.channelId, projectDir);
+      saveSessions(paths.sessionsPath, sessions);
+
+      const harnessName = sessions[message.channelId]?.harness ?? config.defaultHarness;
+      await message.reply(`Project \`${projectName}\` ready at \`${projectDir}\`. Harness: ${harnessName}`);
+      return;
     }
 
-    await queue.enqueue(message.channelId, async () => {
-      if (!existsSync(route.projectDir)) {
-        mkdirSync(route.projectDir, { recursive: true });
-        writeFileSync(
-          path.join(route.projectDir, "CLAUDE.md"),
-          `# ${route.slug}\n\nProject created by Houston from Discord channel #${channelName}.\n`,
-        );
-        console.log(`Created project directory: ${route.projectDir}`);
-      } else if (!statSync(route.projectDir).isDirectory()) {
-        await message.reply(`Project path exists but is not a directory: \`${route.projectDir}\``);
+    // /harness command: switch harness for channel
+    if (command?.type === "harness") {
+      if (!isHarnessName(command.harnessName)) {
+        await message.reply(`Unknown harness \`${command.harnessName}\`. Supported: claude, gemini`);
         return;
       }
 
-      const previousSessionId = sessions[message.channelId]?.sessionId;
-      const resumeFlag = previousSessionId ? ` --resume ${previousSessionId}` : "";
-      log(`Session: ${previousSessionId ?? "new"}`);
-      log(`Debug: cd ${route.projectDir} && claude${resumeFlag}`);
+      setHarness(sessions, message.channelId, command.harnessName);
+      saveSessions(paths.sessionsPath, sessions);
+      await message.reply(`Harness switched to **${command.harnessName}**. Session cleared.`);
+      return;
+    }
+
+    // Check if channel is bound to a project
+    const entry = sessions[message.channelId];
+    const projectDir = entry?.projectDir;
+    if (!projectDir) {
+      const suggested = typeof channelName === "string" ? sanitizeChannelName(channelName) : null;
+      const lowerPrompt = prompt.trim().toLowerCase();
+
+      // User replied "yes"/"y" to the setup suggestion: run /setup with the suggested name
+      if ((lowerPrompt === "yes" || lowerPrompt === "y") && isReplyToBot && suggested) {
+        // Synthesize a /setup command with the suggested channel name
+        const syntheticCommand: HoustonCommand = { type: "setup", projectName: suggested };
+        const synthProjectDir = path.resolve(config.baseDir, syntheticCommand.projectName);
+        if (!isSubPath(config.baseDir, synthProjectDir)) {
+          await message.reply("Invalid project name.");
+          return;
+        }
+
+        if (!existsSync(synthProjectDir)) {
+          scaffoldProject(synthProjectDir, syntheticCommand.projectName, channelName);
+          console.log(`Created project directory: ${synthProjectDir}`);
+        } else if (!statSync(synthProjectDir).isDirectory()) {
+          await message.reply(`Project path exists but is not a directory: \`${synthProjectDir}\``);
+          return;
+        }
+
+        setProjectDir(sessions, message.channelId, synthProjectDir);
+        saveSessions(paths.sessionsPath, sessions);
+
+        const harnessName = sessions[message.channelId]?.harness ?? config.defaultHarness;
+        await message.reply(`Project \`${syntheticCommand.projectName}\` ready at \`${synthProjectDir}\`. Harness: ${harnessName}`);
+        return;
+      }
+
+      const botName = client.user?.username ?? "Houston";
+      if (suggested) {
+        await message.reply(`To use ${botName} in this channel, you need to set up a local project. Use \`${suggested}\`? Reply **yes** or \`/setup <other-name>\`.`);
+      } else {
+        await message.reply(`To use ${botName} in this channel, you need to set up a local project. Use \`/setup <project-name>\` to get started.`);
+      }
+      return;
+    }
+
+    // /persona command
+    if (command?.type === "persona") {
+      const agentsPath = path.join(projectDir, "AGENTS.md");
+      if (!command.description) {
+        updatePersona(agentsPath, "");
+        await message.reply("Persona cleared.");
+        return;
+      }
+
+      const harnessName = entry?.harness ?? config.defaultHarness;
+      const driver = getDriver(harnessName);
       const stopTyping = startTypingLoop(message.channel);
 
-      const editMode = sessions[message.channelId]?.editMode === true;
+      try {
+        const result = await runHarness({
+          prompt: buildPersonaPrompt(command.description),
+          projectDir,
+          driver,
+          editMode: false,
+          timeoutMs: 2 * 60 * 1000,
+        });
+
+        stopTyping();
+        const generated = result.output.trim();
+        if (!generated) {
+          await message.reply("Failed to generate persona. Try again with a different description.");
+          return;
+        }
+
+        updatePersona(agentsPath, generated);
+        await message.reply(`Persona set:\n\n${generated}`);
+      } catch (error) {
+        stopTyping();
+        log(`Persona generation error: ${error instanceof Error ? error.message : error}`);
+        await message.reply("Failed to generate persona. Try again.");
+      }
+      return;
+    }
+
+    // /edit command
+    if (command?.type === "edit") {
+      setEditMode(sessions, message.channelId, command.enabled);
+      saveSessions(paths.sessionsPath, sessions);
+      const label = command.enabled
+        ? "Edit mode enabled. Claude can now modify files."
+        : "Edit mode disabled.";
+      await message.reply(label);
+      return;
+    }
+
+    // /status command
+    if (command?.type === "status") {
+      const harnessName = entry?.harness ?? config.defaultHarness;
+      const editLabel = entry?.editMode ? "on" : "off";
+      const sessionLabel = entry?.sessionId || "none";
+      await message.reply(
+        `**Harness:** ${harnessName}\n**Edit mode:** ${editLabel}\n**Session:** ${sessionLabel}\n**Project:** ${projectDir}`,
+      );
+      return;
+    }
+
+    log(`Routed to project: ${projectDir}`);
+    log(`Prompt: ${prompt.slice(0, 200)}`);
+
+    await queue.enqueue(message.channelId, async () => {
+      if (!existsSync(projectDir)) {
+        await message.reply(`Project directory not found: \`${projectDir}\`. Run \`/setup <name>\` again.`);
+        return;
+      }
+
+      const harnessName = entry?.harness ?? config.defaultHarness;
+      const driver = getDriver(harnessName);
+      const previousSessionId = entry?.sessionId || undefined;
+      const editMode = entry?.editMode === true;
+
+      log(`Session: ${previousSessionId ?? "new"}`);
+      log(`Harness: ${harnessName}`);
+      const stopTyping = startTypingLoop(message.channel);
+
       const runOpts = {
         prompt,
-        projectDir: route.projectDir,
-        dangerouslySkipPermissions: editMode,
+        projectDir,
+        driver,
+        editMode,
         timeoutMs: 10 * 60 * 1000,
-        onSpawn: (pid: number) => log(`Claude process started (pid ${pid})`),
+        onSpawn: (pid: number) => log(`${driver.name} process started (pid ${pid})`),
         onEvent: (event: StreamJsonEvent) => {
           if (event.type) log(`Event: ${event.type}${event.session_id ? ` session=${event.session_id}` : ""}`);
         },
@@ -307,22 +473,22 @@ export async function start(): Promise<void> {
       };
 
       try {
-        log("Spawning Claude process...");
+        log(`Spawning ${driver.name} process...`);
         let result;
         try {
-          result = await runClaude({ ...runOpts, sessionId: previousSessionId });
+          result = await runHarness({ ...runOpts, sessionId: previousSessionId });
         } catch (error) {
-          if (previousSessionId && error instanceof ClaudeProcessError && error.details.some((l) => l.includes("already in use"))) {
+          if (previousSessionId && error instanceof HarnessProcessError && error.details.some((l) => l.includes("already in use"))) {
             log("Session in use, retrying without session ID...");
             setEditMode(sessions, message.channelId, false);
-            result = await runClaude({ ...runOpts, dangerouslySkipPermissions: false });
+            result = await runHarness({ ...runOpts, editMode: false });
           } else {
             throw error;
           }
         }
 
         stopTyping();
-        log(`Claude finished: ${result.output.length} chars, session ${result.sessionId ?? "none"}`);
+        log(`${driver.name} finished: ${result.output.length} chars, session ${result.sessionId ?? "none"}`);
         log(`Output:\n${result.output}`);
 
         let output = result.output.trim().length > 0 ? result.output.trim() : "No assistant text returned.";
@@ -341,14 +507,14 @@ export async function start(): Promise<void> {
 
         await sendReplyInChunks(message, output);
 
-        if (result.sessionId && isUuid(result.sessionId)) {
+        if (result.sessionId && driver.isValidSessionId(result.sessionId)) {
           setSession(sessions, message.channelId, result.sessionId);
           saveSessions(paths.sessionsPath, sessions);
           log(`Session saved: ${result.sessionId}`);
         }
       } catch (error) {
         stopTyping();
-        log(`Claude error: ${error instanceof Error ? error.message : error}`);
+        log(`${driver.name} error: ${error instanceof Error ? error.message : error}`);
         const formatted = formatCommandError(error);
         const body = `\`\`\`\n${formatted.slice(0, 3900)}\n\`\`\``;
         await message.reply(body);
@@ -356,8 +522,7 @@ export async function start(): Promise<void> {
     });
   });
 
-  const argsPreview = buildClaudeArgs("health-check");
-  console.log(`Claude args baseline: ${argsPreview.slice(0, 6).join(" ")}`);
+  console.log(`Default harness: ${config.defaultHarness}`);
 
   await client.login(config.token);
 }

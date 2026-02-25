@@ -1,10 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import type { HarnessName } from "./harness";
 
 export interface HoustonConfig {
   token: string;
-  channelPrefix: string;
+  defaultHarness: HarnessName;
   baseDir: string;
 }
 
@@ -24,7 +25,7 @@ export interface ResolvePathOptions {
 
 const DEFAULT_CONFIG_RELATIVE_PATH = ".config/houston/config.json";
 const DEFAULT_SESSIONS_RELATIVE_PATH = ".local/state/houston/sessions.json";
-const DEFAULT_CHANNEL_PREFIX = "cc-";
+const DEFAULT_HARNESS: HarnessName = "claude";
 
 function getArgValue(argv: string[], flag: string): string | undefined {
   const directIndex = argv.indexOf(flag);
@@ -152,6 +153,10 @@ function readJsonFile(filePath: string): unknown {
   return JSON.parse(raw);
 }
 
+function isValidHarnessName(value: unknown): value is HarnessName {
+  return value === "claude" || value === "gemini";
+}
+
 export function loadConfigFromPath(configPath: string, cwd = process.cwd()): HoustonConfig {
   const parsed = readJsonFile(configPath);
   return validateConfig(parsed, cwd);
@@ -172,10 +177,9 @@ export function validateConfig(value: unknown, cwd = process.cwd()): HoustonConf
 
   const input = value as Record<string, unknown>;
   const token = typeof input.token === "string" ? input.token.trim() : "";
-  const channelPrefix =
-    typeof input.channelPrefix === "string" && input.channelPrefix.trim().length > 0
-      ? input.channelPrefix.trim()
-      : DEFAULT_CHANNEL_PREFIX;
+  const defaultHarness = isValidHarnessName(input.defaultHarness)
+    ? input.defaultHarness
+    : DEFAULT_HARNESS;
   const baseDirInput = typeof input.baseDir === "string" ? input.baseDir.trim() : "";
   if (!token) {
     throw new Error("config.json is missing required field: token");
@@ -187,7 +191,7 @@ export function validateConfig(value: unknown, cwd = process.cwd()): HoustonConf
 
   return {
     token,
-    channelPrefix,
+    defaultHarness,
     baseDir: path.resolve(cwd, expandHomePath(baseDirInput)),
   };
 }
@@ -216,7 +220,7 @@ export function missingConfigErrorMessage(configPath: string): string {
 }
 
 export const defaults = {
-  channelPrefix: DEFAULT_CHANNEL_PREFIX,
+  defaultHarness: DEFAULT_HARNESS,
   configRelativePath: DEFAULT_CONFIG_RELATIVE_PATH,
   sessionsRelativePath: DEFAULT_SESSIONS_RELATIVE_PATH,
 };
