@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { classifiedToCommand, isSubPath, isValidProjectName, parseCommand, sanitizeChannelName, sanitizeDiscordReply, scaffoldProject, splitDiscordMessage, stripBotMention, updatePersona } from "../src/index";
+import { applyEmptyMentionHelpRule, buildEmptyMentionHelp, classifiedToCommand, isSubPath, isValidProjectName, parseCommand, sanitizeChannelName, sanitizeDiscordReply, scaffoldProject, splitDiscordMessage, stripBotMention, updatePersona } from "../src/index";
 
 describe("isSubPath", () => {
   test("accepts direct children and rejects parents", () => {
@@ -223,6 +223,40 @@ describe("mention parsing", () => {
       mentioned: false,
       prompt: "",
     });
+  });
+});
+
+describe("empty mention help rule", () => {
+  test("shows help for first empty direct mention", () => {
+    expect(applyEmptyMentionHelpRule(false, true, "")).toEqual({ showHelp: true, nextShown: true });
+  });
+
+  test("suppresses help for consecutive empty direct mentions", () => {
+    expect(applyEmptyMentionHelpRule(true, true, "")).toEqual({ showHelp: false, nextShown: true });
+  });
+
+  test("resets help suppression after non empty prompt", () => {
+    expect(applyEmptyMentionHelpRule(true, true, "/status")).toEqual({ showHelp: false, nextShown: false });
+    expect(applyEmptyMentionHelpRule(true, false, "hello")).toEqual({ showHelp: false, nextShown: false });
+  });
+
+  test("keeps state when message is unrelated and empty", () => {
+    expect(applyEmptyMentionHelpRule(true, false, "")).toEqual({ showHelp: false, nextShown: true });
+  });
+});
+
+describe("empty mention help message", () => {
+  test("customizes message for unbound channels", () => {
+    const output = buildEmptyMentionHelp("Houston", false, "my-channel");
+    expect(output).toContain("not set up yet");
+    expect(output).toContain("/setup my-channel");
+  });
+
+  test("returns command summary for bound channels", () => {
+    const output = buildEmptyMentionHelp("Houston", true, null);
+    expect(output).toContain("Commands:");
+    expect(output).toContain("/status");
+    expect(output).toContain("/icon clear");
   });
 });
 

@@ -71,6 +71,48 @@ export function classifiedToCommand(classified: ClassifiedCommand): HoustonComma
   }
 }
 
+export function applyEmptyMentionHelpRule(
+  previousShown: boolean,
+  isDirectMention: boolean,
+  prompt: string,
+): { showHelp: boolean; nextShown: boolean } {
+  if (prompt.trim().length > 0) {
+    return { showHelp: false, nextShown: false };
+  }
+
+  if (!isDirectMention) {
+    return { showHelp: false, nextShown: previousShown };
+  }
+
+  if (previousShown) {
+    return { showHelp: false, nextShown: true };
+  }
+
+  return { showHelp: true, nextShown: true };
+}
+
+export function buildEmptyMentionHelp(
+  botName: string,
+  isProjectBound: boolean,
+  suggestedProjectName: string | null,
+): string {
+  if (!isProjectBound) {
+    const setupHint = suggestedProjectName
+      ? `Use \`/setup ${suggestedProjectName}\` to bind this channel.`
+      : "Use `/setup <project-name>` to bind this channel.";
+    return [
+      `Hi, I am ${botName}. This channel is not set up yet.`,
+      setupHint,
+      "After setup, try `/status` to verify settings.",
+    ].join("\n");
+  }
+
+  return [
+    `Hi, I am ${botName}.`,
+    "Commands: `/status`, `/resume`, `/harness claude|codex|gemini`, `/edit on|off`, `/persona <description>`, `/icon`, `/icon clear`.",
+  ].join("\n");
+}
+
 export function stripBotMention(
   messageContent: string,
   botUserId: string,
@@ -324,6 +366,7 @@ export async function start(): Promise<void> {
   const sessions = loadSessions(paths.sessionsPath);
   const queue = new ChannelQueue();
   const availableDrivers = await checkAvailableDrivers();
+  const emptyMentionHelpShown = new Set<string>();
 
   const discord = await import("discord.js");
   const client = new discord.Client({
@@ -388,7 +431,29 @@ export async function start(): Promise<void> {
 
     const mention = stripBotMention(message.content, client.user.id, botRoleIds);
     let prompt = mention.mentioned ? mention.prompt : isReplyToBot ? message.content.trim() : "";
+    const previousHelpShown = emptyMentionHelpShown.has(message.channelId);
+    const emptyMentionRule = applyEmptyMentionHelpRule(previousHelpShown, mention.mentioned, prompt);
+    if (emptyMentionRule.nextShown) {
+      emptyMentionHelpShown.add(message.channelId);
+    } else {
+      emptyMentionHelpShown.delete(message.channelId);
+    }
+
+    if (emptyMentionRule.showHelp) {
+      const entry = sessions[message.channelId];
+      const isProjectBound = Boolean(entry?.projectDir);
+      const suggested = typeof channelName === "string" ? sanitizeChannelName(channelName) : null;
+      const botName = client.user?.username ?? "Houston";
+      const help = buildEmptyMentionHelp(botName, isProjectBound, suggested);
+      await reply(message, help);
+      return;
+    }
+
     if (!prompt) {
+      if (mention.mentioned) {
+        log("Skipped: repeated empty mention");
+        return;
+      }
       log("Skipped: not a bot mention or reply");
       return;
     }
