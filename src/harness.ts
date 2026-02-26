@@ -4,6 +4,7 @@ export interface HarnessDriver {
   name: string;
   binary: string;
   textSeparator: string;
+  assistantTextMode?: "append" | "latest";
   buildArgs(opts: { prompt: string; sessionId?: string; editMode: boolean }): string[];
   buildEnv(env: Record<string, string | undefined>): Record<string, string | undefined>;
   extractSessionId(event: Record<string, unknown>): string | undefined;
@@ -188,7 +189,11 @@ export async function runHarness(options: HarnessRunOptions): Promise<HarnessRun
 
     const assistantText = driver.extractAssistantText(event as Record<string, unknown>);
     if (assistantText) {
-      output += (output && assistantText) ? driver.textSeparator + assistantText : assistantText;
+      if (driver.assistantTextMode === "latest") {
+        output = assistantText;
+      } else {
+        output += (output && assistantText) ? driver.textSeparator + assistantText : assistantText;
+      }
     }
 
     const resultErrors = driver.extractErrors(event as Record<string, unknown>);

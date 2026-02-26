@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { codexDriver } from "../src/drivers/codex";
 
+const withFinalOnly = (prompt: string) =>
+  `${prompt}\n\nRespond with the final answer only. Do not include planning notes, progress updates, or internal reasoning.`;
+
 describe("codex argument builder", () => {
+  test("uses latest assistant text mode", () => {
+    expect(codexDriver.assistantTextMode).toBe("latest");
+  });
+
   test("builds read-only args with network access when edit mode is off", () => {
     const args = codexDriver.buildArgs({ prompt: "hello world", editMode: false });
     expect(args).toEqual([
@@ -12,7 +19,7 @@ describe("codex argument builder", () => {
       "read-only",
       "-c",
       "sandbox_read_only.network_access=true",
-      "hello world",
+      withFinalOnly("hello world"),
     ]);
   });
 
@@ -25,7 +32,7 @@ describe("codex argument builder", () => {
       "--full-auto",
       "-c",
       "sandbox_workspace_write.network_access=true",
-      "fix the bug",
+      withFinalOnly("fix the bug"),
     ]);
   });
 
@@ -42,7 +49,7 @@ describe("codex argument builder", () => {
       "sandbox_read_only.network_access=true",
       "resume",
       sid,
-      "continue",
+      withFinalOnly("continue"),
     ]);
   });
 });
@@ -72,6 +79,28 @@ describe("codex text extraction", () => {
       item: { type: "agent_message", text: "Here is the result." },
     });
     expect(text).toBe("Here is the result.");
+  });
+
+  test("extracts final phase text", () => {
+    const text = codexDriver.extractAssistantText({
+      type: "item.completed",
+      item: { type: "agent_message", phase: "final", text: "Final answer." },
+    });
+    expect(text).toBe("Final answer.");
+  });
+
+  test("ignores non-final phases", () => {
+    const analysis = codexDriver.extractAssistantText({
+      type: "item.completed",
+      item: { type: "agent_message", phase: "analysis", text: "internal reasoning" },
+    });
+    const commentary = codexDriver.extractAssistantText({
+      type: "item.completed",
+      item: { type: "agent_message", phase: "commentary", text: "ongoing thoughts" },
+    });
+
+    expect(analysis).toBe("");
+    expect(commentary).toBe("");
   });
 
   test("returns empty for non agent_message items", () => {

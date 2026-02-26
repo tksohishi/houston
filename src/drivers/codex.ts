@@ -3,10 +3,18 @@ import type { HarnessDriver } from "../harness";
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+const FINAL_RESPONSE_ONLY_INSTRUCTION =
+  "Respond with the final answer only. Do not include planning notes, progress updates, or internal reasoning.";
+
+function withFinalResponseOnlyInstruction(prompt: string): string {
+  return `${prompt}\n\n${FINAL_RESPONSE_ONLY_INSTRUCTION}`;
+}
+
 export const codexDriver: HarnessDriver = {
   name: "Codex",
   binary: "codex",
   textSeparator: "\n\n",
+  assistantTextMode: "latest",
 
   buildArgs({ prompt, sessionId, editMode }) {
     const args = ["exec", "--json", "--skip-git-repo-check"];
@@ -23,7 +31,7 @@ export const codexDriver: HarnessDriver = {
       args.push("resume", sessionId);
     }
 
-    args.push(prompt);
+    args.push(withFinalResponseOnlyInstruction(prompt));
     return args;
   },
 
@@ -48,8 +56,12 @@ export const codexDriver: HarnessDriver = {
       return "";
     }
 
-    const item = event.item as { type?: string; text?: string } | undefined;
+    const item = event.item as { type?: string; text?: string; phase?: string } | undefined;
     if (item?.type !== "agent_message" || typeof item.text !== "string") {
+      return "";
+    }
+
+    if (item.phase && item.phase !== "final") {
       return "";
     }
 
