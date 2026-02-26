@@ -1,12 +1,13 @@
 # Houston
 
-Houston is a remote command center for AI coding agents, operated through Discord. It supports multiple harnesses (Claude Code, Gemini CLI) and binds Discord channels to local project directories.
+Houston is a remote command center for AI coding agents, operated through Discord. It supports multiple harnesses (Claude Code, Gemini CLI, Codex CLI) and binds Discord channels to local project directories.
 
 ## Prerequisites
 
 - [Bun](https://bun.sh/)
 - At least one supported CLI installed and authenticated:
   - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`)
+  - [Codex CLI](https://github.com/openai/codex) (`codex`)
   - [Gemini CLI](https://github.com/google-gemini/gemini-cli) (`gemini`)
 - A private Discord server
 
@@ -22,7 +23,7 @@ Houston is a remote command center for AI coding agents, operated through Discor
    - required bot settings (Message Content Intent)
    - invite URL generation
    - token and application ID prompts with validation
-   - default harness selection (claude or gemini)
+   - default harness selection (claude, codex, or gemini)
 4. Setup writes config to `${XDG_CONFIG_HOME:-~/.config}/houston/config.json` by default.
 5. Sessions are stored at `${XDG_STATE_HOME:-~/.local/state}/houston/sessions.json` by default.
 
@@ -41,14 +42,13 @@ This creates `<baseDir>/my-project` (if missing), scaffolds a `CLAUDE.md`, and b
 | Command | Action |
 |---------|--------|
 | `/setup <name>` | Bind channel to `baseDir/<name>`, auto-create dir |
-| `/harness claude\|gemini` | Switch harness for channel (clears session) |
+| `/harness claude\|codex\|gemini` | Switch harness for channel (clears session) |
 | `/edit on\|off` | Toggle edit mode |
 | `/status` | Show harness, edit mode, session, project |
 
 ## Run
 
-- Start daemon: `bun run start`
-- Dev mode: `bun run dev`
+- `bun start` or `bun dev` (verbose logging)
 
 ## Tests
 
@@ -67,3 +67,4 @@ The test suite covers:
 - Houston runs the selected harness CLI with headless flags and NDJSON output.
 - Houston only runs when a message starts with a bot mention in a bound channel; regular chat is ignored.
 - The default harness is configurable (`defaultHarness` in config.json). Per-channel overrides are set via `/harness`.
+- At startup, Houston checks which harness binaries are installed and logs availability. The `/harness` command only allows switching to installed harnesses.

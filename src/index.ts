@@ -2,7 +2,8 @@ import { existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSy
 import path from "node:path";
 import { HarnessProcessError, HarnessTimeoutError, runHarness, type StreamJsonEvent } from "./harness";
 import { loadConfig, missingConfigErrorMessage } from "./config";
-import { getDriver, isHarnessName } from "./drivers";
+import { classifyIntent, type ClassifiedCommand } from "./classify";
+import { checkAvailableDrivers, getDriver, isHarnessName } from "./drivers";
 import { ChannelQueue } from "./queue";
 import { ensureConfigFilePermissions, loadSessions, saveSessions, setEditMode, setHarness, setProjectDir, setSession } from "./sessions";
 
@@ -31,14 +32,45 @@ export function parseCommand(prompt: string): HoustonCommand | null {
   const personaMatch = trimmed.match(/^\/persona\s+(.+)$/);
   if (personaMatch) return { type: "persona", description: personaMatch[1].trim() };
 
+  // Natural language harness switching: "switch to codex", "use gemini", "change harness to claude"
+  const nlHarnessMatch = trimmed.match(/^(?:switch|change|use|set)\s+(?:(?:harness|model|engine)\s+)?(?:to\s+)?(\w+)$/i)
+    ?? trimmed.match(/^(?:switch|change|set)\s+to\s+(\w+)$/i);
+  if (nlHarnessMatch) {
+    const candidate = nlHarnessMatch[1].toLowerCase();
+    if (isHarnessName(candidate)) return { type: "harness", harnessName: candidate };
+  }
+
   return null;
+}
+
+export function classifiedToCommand(classified: ClassifiedCommand): HoustonCommand | null {
+  switch (classified.command) {
+    case "harness":
+      return classified.args ? { type: "harness", harnessName: classified.args } : null;
+    case "edit":
+      if (classified.args === "on") return { type: "edit", enabled: true };
+      if (classified.args === "off") return { type: "edit", enabled: false };
+      return null;
+    case "status":
+      return { type: "status" };
+    case "setup":
+      return classified.args ? { type: "setup", projectName: classified.args } : null;
+    case "persona":
+      return { type: "persona", description: classified.args ?? "" };
+    default:
+      return null;
+  }
 }
 
 export function stripBotMention(
   messageContent: string,
   botUserId: string,
+  roleIds: string[] = [],
 ): { mentioned: boolean; prompt: string } {
   const mentionFormats = [`<@${botUserId}>`, `<@!${botUserId}>`];
+  for (const roleId of roleIds) {
+    mentionFormats.push(`<@&${roleId}>`);
+  }
   const trimmed = messageContent.trim();
 
   for (const mention of mentionFormats) {
@@ -244,6 +276,7 @@ export async function start(): Promise<void> {
 
   const sessions = loadSessions(paths.sessionsPath);
   const queue = new ChannelQueue();
+  const availableDrivers = await checkAvailableDrivers();
 
   const discord = await import("discord.js");
   const client = new discord.Client({
@@ -256,12 +289,28 @@ export async function start(): Promise<void> {
     if (verbose) console.log("[houston]", ...args);
   }
 
+  let botRoleIds: string[] = [];
+
   client.on("clientReady", () => {
     console.log(`Houston online as ${client.user?.tag ?? "unknown user"}`);
     console.log(`Config path: ${paths.configPath}`);
     console.log(`Sessions path: ${paths.sessionsPath}`);
     console.log(`Default harness: ${config.defaultHarness}`);
+    console.log(`Available harnesses: ${[...availableDrivers].join(", ") || "none"}`);
     console.log(`Base directory: ${config.baseDir}`);
+
+    // Collect managed role IDs so @Role mentions also trigger the bot
+    const botId = client.user?.id;
+    if (botId) {
+      const roleIds: string[] = [];
+      for (const guild of client.guilds.cache.values()) {
+        const managed = guild.roles.cache.find((r: any) => r.managed && r.tags?.botId === botId);
+        if (managed) roleIds.push(managed.id);
+      }
+      botRoleIds = roleIds;
+      if (roleIds.length > 0) log(`Bot role IDs: ${roleIds.join(", ")}`);
+    }
+
     if (verbose) console.log("Verbose logging enabled");
   });
 
@@ -281,17 +330,32 @@ export async function start(): Promise<void> {
     const channelName = message.channel?.name;
     log(`Message in #${channelName ?? "unknown"} from ${message.author?.tag}: ${message.content.slice(0, 100)}`);
 
-    const isReplyToBot = message.reference?.messageId
-      && (await message.channel.messages.fetch(message.reference.messageId).catch(() => null))?.author?.id === client.user.id;
+    const repliedMessage = message.reference?.messageId
+      ? await message.channel.messages.fetch(message.reference.messageId).catch(() => null)
+      : null;
+    const isReplyToBot = repliedMessage?.author?.id === client.user.id;
 
-    const mention = stripBotMention(message.content, client.user.id);
-    const prompt = mention.mentioned ? mention.prompt : isReplyToBot ? message.content.trim() : "";
+    const mention = stripBotMention(message.content, client.user.id, botRoleIds);
+    let prompt = mention.mentioned ? mention.prompt : isReplyToBot ? message.content.trim() : "";
     if (!prompt) {
       log("Skipped: not a bot mention or reply");
       return;
     }
 
-    const command = parseCommand(prompt);
+    let command = parseCommand(prompt);
+
+    // For short unmatched messages, try LLM intent classification
+    if (!command && prompt.length <= 100 && availableDrivers.has("claude")) {
+      try {
+        const classified = await classifyIntent(prompt);
+        if (classified.command !== "none") {
+          command = classifiedToCommand(classified);
+          if (command) log(`Classified as ${command.type}${("harnessName" in command ? `: ${command.harnessName}` : "")}`);
+        }
+      } catch (err) {
+        log(`Classification failed, falling through to harness: ${err instanceof Error ? err.message : err}`);
+      }
+    }
 
     // /setup command: bind channel to a project
     if (command?.type === "setup") {
@@ -319,14 +383,21 @@ export async function start(): Promise<void> {
       saveSessions(paths.sessionsPath, sessions);
 
       const harnessName = sessions[message.channelId]?.harness ?? config.defaultHarness;
-      await message.reply(`Project \`${projectName}\` ready at \`${projectDir}\`. Harness: ${harnessName}`);
+      const available = [...availableDrivers];
+      await message.reply(`Project \`${projectName}\` ready at \`${projectDir}\`. Harness: ${harnessName}\nAvailable harnesses: ${available.join(", ") || "none"}`);
       return;
     }
 
     // /harness command: switch harness for channel
     if (command?.type === "harness") {
+      const available = [...availableDrivers];
       if (!isHarnessName(command.harnessName)) {
-        await message.reply(`Unknown harness \`${command.harnessName}\`. Supported: claude, gemini`);
+        await message.reply(`Unknown harness \`${command.harnessName}\`. Available: ${available.join(", ") || "none"}`);
+        return;
+      }
+
+      if (!availableDrivers.has(command.harnessName)) {
+        await message.reply(`Harness \`${command.harnessName}\` is not installed. Available: ${available.join(", ") || "none"}`);
         return;
       }
 
@@ -365,7 +436,8 @@ export async function start(): Promise<void> {
         saveSessions(paths.sessionsPath, sessions);
 
         const harnessName = sessions[message.channelId]?.harness ?? config.defaultHarness;
-        await message.reply(`Project \`${syntheticCommand.projectName}\` ready at \`${synthProjectDir}\`. Harness: ${harnessName}`);
+        const synthAvailable = [...availableDrivers];
+        await message.reply(`Project \`${syntheticCommand.projectName}\` ready at \`${synthProjectDir}\`. Harness: ${harnessName}\nAvailable harnesses: ${synthAvailable.join(", ") || "none"}`);
         return;
       }
 
@@ -433,10 +505,18 @@ export async function start(): Promise<void> {
       const harnessName = entry?.harness ?? config.defaultHarness;
       const editLabel = entry?.editMode ? "on" : "off";
       const sessionLabel = entry?.sessionId || "none";
+      const installedLabel = availableDrivers.has(harnessName) ? "yes" : "no";
       await message.reply(
-        `**Harness:** ${harnessName}\n**Edit mode:** ${editLabel}\n**Session:** ${sessionLabel}\n**Project:** ${projectDir}`,
+        `**Harness:** ${harnessName} (installed: ${installedLabel})\n**Edit mode:** ${editLabel}\n**Session:** ${sessionLabel}\n**Project:** ${projectDir}`,
       );
       return;
+    }
+
+    // When the user replies to a specific bot message, prepend its content
+    // so the harness knows what "this", "that", etc. refer to.
+    if (isReplyToBot && repliedMessage?.content) {
+      const quoted = repliedMessage.content.slice(0, 1000);
+      prompt = `[Replying to your previous message: "${quoted}"]\n\n${prompt}`;
     }
 
     log(`Routed to project: ${projectDir}`);
@@ -448,10 +528,14 @@ export async function start(): Promise<void> {
         return;
       }
 
-      const harnessName = entry?.harness ?? config.defaultHarness;
+      // Re-read session inside the queue callback to get the latest state.
+      // The entry captured outside the queue becomes stale when setSession()
+      // replaces sessions[channelId] with a new object during a prior queued run.
+      const currentEntry = sessions[message.channelId];
+      const harnessName = currentEntry?.harness ?? config.defaultHarness;
       const driver = getDriver(harnessName);
-      const previousSessionId = entry?.sessionId || undefined;
-      const editMode = entry?.editMode === true;
+      const previousSessionId = currentEntry?.sessionId || undefined;
+      const editMode = currentEntry?.editMode === true;
 
       log(`Session: ${previousSessionId ?? "new"}`);
       log(`Harness: ${harnessName}`);
@@ -500,7 +584,7 @@ export async function start(): Promise<void> {
         log(`Permission denials: ${JSON.stringify(result.permissionDenials)}`);
         const hasEditDenial = result.permissionDenials.some(
           (d) => d.includes("Edit") || d.includes("Write"),
-        ) || (!editMode && /\bWrite\b.*\bblocked\b|\bEdit\b.*\bblocked\b|\bpermission\b.*\b(?:Write|Edit)\b/i.test(result.output));
+        ) || (!editMode && /write_file|run_shell_command|write.*blocked|edit.*blocked|permission.*(?:write|edit)|read.only|sandbox|cannot.*(?:modify|write|edit|create)/i.test(result.output));
         if (hasEditDenial) {
           output += "\n\nTip: use `/edit on` to allow file modifications.";
         }
@@ -521,8 +605,6 @@ export async function start(): Promise<void> {
       }
     });
   });
-
-  console.log(`Default harness: ${config.defaultHarness}`);
 
   await client.login(config.token);
 }

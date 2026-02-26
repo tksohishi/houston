@@ -9,7 +9,7 @@ import { parseSetupFlags } from "../src/setup-flags";
 import { resetConfigAndSessions } from "../src/setup-reset";
 import { buildBotInviteUrl, isValidDiscordId, looksLikeDiscordToken } from "../src/setup-utils";
 
-const SUPPORTED_HARNESSES = ["claude", "gemini"] as const;
+const SUPPORTED_HARNESSES = ["claude", "codex", "gemini"] as const;
 
 function withDefault(value: string, fallback: string): string {
   return value.trim().length > 0 ? value.trim() : fallback;

@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { HarnessName } from "./harness";
+import { isHarnessName } from "./drivers";
 
 export interface SessionStateEntry {
   sessionId: string;
@@ -40,7 +41,7 @@ export function loadSessions(filePath: string): SessionState {
         lastUsed: typeof entry.lastUsed === "string" ? entry.lastUsed : new Date().toISOString(),
         editMode: entry.editMode === true ? true : undefined,
         projectDir: typeof entry.projectDir === "string" ? entry.projectDir : undefined,
-        harness: entry.harness === "claude" || entry.harness === "gemini" ? entry.harness : undefined,
+        harness: typeof entry.harness === "string" && isHarnessName(entry.harness) ? entry.harness : undefined,
       };
     }
 
@@ -108,6 +109,7 @@ export function setHarness(sessions: SessionState, channelId: string, harness: H
   if (existing) {
     existing.harness = harness;
     existing.sessionId = "";
+    existing.editMode = undefined;
   } else {
     sessions[channelId] = { sessionId: "", lastUsed: new Date().toISOString(), harness };
   }

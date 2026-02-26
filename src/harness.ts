@@ -1,4 +1,4 @@
-export type HarnessName = "claude" | "gemini";
+export type HarnessName = "claude" | "gemini" | "codex";
 
 export interface HarnessDriver {
   name: string;

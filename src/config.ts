@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import type { HarnessName } from "./harness";
+import { isHarnessName } from "./drivers";
 
 export interface HoustonConfig {
   token: string;
@@ -154,7 +155,7 @@ function readJsonFile(filePath: string): unknown {
 }
 
 function isValidHarnessName(value: unknown): value is HarnessName {
-  return value === "claude" || value === "gemini";
+  return typeof value === "string" && isHarnessName(value);
 }
 
 export function loadConfigFromPath(configPath: string, cwd = process.cwd()): HoustonConfig {

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { isSubPath, isValidProjectName, parseCommand, sanitizeChannelName, scaffoldProject, splitDiscordMessage, stripBotMention, updatePersona } from "../src/index";
+import { classifiedToCommand, isSubPath, isValidProjectName, parseCommand, sanitizeChannelName, scaffoldProject, splitDiscordMessage, stripBotMention, updatePersona } from "../src/index";
 
 describe("isSubPath", () => {
   test("accepts direct children and rejects parents", () => {
@@ -72,6 +72,7 @@ describe("parseCommand", () => {
   test("parses /harness with harness name", () => {
     expect(parseCommand("/harness claude")).toEqual({ type: "harness", harnessName: "claude" });
     expect(parseCommand("/harness gemini")).toEqual({ type: "harness", harnessName: "gemini" });
+    expect(parseCommand("/harness codex")).toEqual({ type: "harness", harnessName: "codex" });
   });
 
   test("parses /persona with description", () => {
@@ -81,6 +82,17 @@ describe("parseCommand", () => {
   test("parses /persona clear and bare /persona as clear", () => {
     expect(parseCommand("/persona clear")).toEqual({ type: "persona", description: "" });
     expect(parseCommand("/persona")).toEqual({ type: "persona", description: "" });
+  });
+
+  test("parses natural language harness switching", () => {
+    expect(parseCommand("switch to codex")).toEqual({ type: "harness", harnessName: "codex" });
+    expect(parseCommand("use gemini")).toEqual({ type: "harness", harnessName: "gemini" });
+    expect(parseCommand("change harness to claude")).toEqual({ type: "harness", harnessName: "claude" });
+    expect(parseCommand("set model to codex")).toEqual({ type: "harness", harnessName: "codex" });
+  });
+
+  test("does not match natural language for unknown harness names", () => {
+    expect(parseCommand("switch to banana")).toBeNull();
   });
 
   test("returns null for unknown commands", () => {
@@ -142,6 +154,22 @@ describe("mention parsing", () => {
     const parsed = stripBotMention("<@123>   ", "123");
     expect(parsed).toEqual({
       mentioned: true,
+      prompt: "",
+    });
+  });
+
+  test("detects role mention when role id is provided", () => {
+    const parsed = stripBotMention("<@&456> /harness codex", "123", ["456"]);
+    expect(parsed).toEqual({
+      mentioned: true,
+      prompt: "/harness codex",
+    });
+  });
+
+  test("ignores role mention when no role ids provided", () => {
+    const parsed = stripBotMention("<@&456> hello", "123");
+    expect(parsed).toEqual({
+      mentioned: false,
       prompt: "",
     });
   });
@@ -220,5 +248,60 @@ describe("updatePersona", () => {
     const content = readFileSync(agentsPath, "utf8");
     expect(content).toContain("## Persona");
     expect(content).toContain("a friendly bot");
+  });
+});
+
+describe("classifiedToCommand", () => {
+  test("converts harness classification", () => {
+    expect(classifiedToCommand({ command: "harness", args: "codex" })).toEqual({
+      type: "harness",
+      harnessName: "codex",
+    });
+  });
+
+  test("converts edit on/off", () => {
+    expect(classifiedToCommand({ command: "edit", args: "on" })).toEqual({ type: "edit", enabled: true });
+    expect(classifiedToCommand({ command: "edit", args: "off" })).toEqual({ type: "edit", enabled: false });
+  });
+
+  test("converts status", () => {
+    expect(classifiedToCommand({ command: "status" })).toEqual({ type: "status" });
+  });
+
+  test("converts setup", () => {
+    expect(classifiedToCommand({ command: "setup", args: "my-app" })).toEqual({
+      type: "setup",
+      projectName: "my-app",
+    });
+  });
+
+  test("converts persona with description", () => {
+    expect(classifiedToCommand({ command: "persona", args: "a pirate" })).toEqual({
+      type: "persona",
+      description: "a pirate",
+    });
+  });
+
+  test("converts persona clear", () => {
+    expect(classifiedToCommand({ command: "persona", args: "" })).toEqual({
+      type: "persona",
+      description: "",
+    });
+  });
+
+  test("returns null for harness without args", () => {
+    expect(classifiedToCommand({ command: "harness" })).toBeNull();
+  });
+
+  test("returns null for edit without args", () => {
+    expect(classifiedToCommand({ command: "edit" })).toBeNull();
+  });
+
+  test("returns null for setup without args", () => {
+    expect(classifiedToCommand({ command: "setup" })).toBeNull();
+  });
+
+  test("returns null for none command", () => {
+    expect(classifiedToCommand({ command: "none" })).toBeNull();
   });
 });
