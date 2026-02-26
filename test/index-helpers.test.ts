@@ -88,6 +88,11 @@ describe("parseCommand", () => {
     expect(parseCommand("/persona")).toEqual({ type: "persona", description: "" });
   });
 
+  test("parses /icon and /icon clear", () => {
+    expect(parseCommand("/icon")).toEqual({ type: "icon", clear: false });
+    expect(parseCommand("/icon clear")).toEqual({ type: "icon", clear: true });
+  });
+
   test("parses natural language harness switching", () => {
     expect(parseCommand("switch to codex")).toEqual({ type: "harness", harnessName: "codex" });
     expect(parseCommand("use gemini")).toEqual({ type: "harness", harnessName: "gemini" });

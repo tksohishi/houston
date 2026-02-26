@@ -19,7 +19,8 @@ export type HoustonCommand =
   | { type: "resume" }
   | { type: "setup"; projectName: string }
   | { type: "harness"; harnessName: string }
-  | { type: "persona"; description: string };
+  | { type: "persona"; description: string }
+  | { type: "icon"; clear: boolean };
 
 export function parseCommand(prompt: string): HoustonCommand | null {
   const trimmed = prompt.trim();
@@ -27,6 +28,8 @@ export function parseCommand(prompt: string): HoustonCommand | null {
   if (trimmed === "/edit off") return { type: "edit", enabled: false };
   if (trimmed === "/status") return { type: "status" };
   if (trimmed === "/resume") return { type: "resume" };
+  if (trimmed === "/icon") return { type: "icon", clear: false };
+  if (trimmed === "/icon clear") return { type: "icon", clear: true };
 
   const setupMatch = trimmed.match(/^\/setup\s+(.+)$/);
   if (setupMatch) return { type: "setup", projectName: setupMatch[1].trim() };
@@ -452,6 +455,74 @@ export async function start(): Promise<void> {
       setHarness(sessions, message.channelId, command.harnessName);
       saveSessions(paths.sessionsPath, sessions);
       await reply(message, `Harness switched to **${command.harnessName}**. Session cleared.`);
+      return;
+    }
+
+    // /icon command: set guild-specific bot avatar
+    if (command?.type === "icon") {
+      if (!message.guild) {
+        await reply(message, "This command only works in server channels.");
+        return;
+      }
+
+      const permissions = message.memberPermissions ?? message.member?.permissions;
+      const canManageGuild = Boolean(permissions?.has?.(discord.PermissionFlagsBits.ManageGuild));
+      if (!canManageGuild) {
+        await reply(message, "You need Manage Server permission to change the bot icon.");
+        return;
+      }
+
+      try {
+        if (command.clear) {
+          await message.guild.members.editMe({
+            avatar: null,
+            reason: `Houston icon cleared by ${message.author?.id ?? "unknown"}`,
+          });
+          await reply(message, "Server-specific bot icon cleared.");
+          return;
+        }
+
+        const attachments = [...message.attachments.values()];
+        if (attachments.length !== 1) {
+          await reply(message, "Attach exactly one image with `@Houston /icon`.");
+          return;
+        }
+
+        const attachment = attachments[0];
+        const contentType = typeof attachment.contentType === "string" ? attachment.contentType.toLowerCase() : "";
+        if (!contentType.startsWith("image/")) {
+          await reply(message, "Attachment must be an image.");
+          return;
+        }
+
+        const imageUrl = typeof attachment.url === "string" ? attachment.url : "";
+        if (!imageUrl) {
+          await reply(message, "Could not read the image attachment URL.");
+          return;
+        }
+
+        let hostname = "";
+        try {
+          hostname = new URL(imageUrl).hostname.toLowerCase();
+        } catch {
+          await reply(message, "Attachment URL is invalid.");
+          return;
+        }
+
+        if (hostname !== "cdn.discordapp.com" && hostname !== "media.discordapp.net") {
+          await reply(message, "Only Discord hosted attachments are allowed.");
+          return;
+        }
+
+        await message.guild.members.editMe({
+          avatar: imageUrl,
+          reason: `Houston icon updated by ${message.author?.id ?? "unknown"}`,
+        });
+        await reply(message, "Server-specific bot icon updated.");
+      } catch (error) {
+        log(`Icon update failed: ${error instanceof Error ? error.message : error}`);
+        await reply(message, "Failed to update server-specific bot icon.");
+      }
       return;
     }
 

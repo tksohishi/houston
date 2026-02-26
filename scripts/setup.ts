@@ -199,11 +199,28 @@ async function main(): Promise<void> {
     while (true) {
       const baseDirInput = await ask(`Base project directory [${defaultBaseDir}]: `);
       baseDir = path.resolve(expandHomePath(withDefault(baseDirInput, defaultBaseDir)));
-      if (existsSync(baseDir) && statSync(baseDir).isDirectory()) {
-        break;
+      if (existsSync(baseDir)) {
+        if (statSync(baseDir).isDirectory()) {
+          break;
+        }
+        console.log(`Path exists but is not a directory: ${baseDir}`);
+        continue;
       }
+
       console.log(`Directory does not exist: ${baseDir}`);
-      console.log("Please enter a valid directory path.");
+      const createDirectory = await ask("Create it now? [Y/n]: ");
+      if (!normalizeYesNo(createDirectory, true)) {
+        continue;
+      }
+
+      try {
+        mkdirSync(baseDir, { recursive: true });
+        console.log(`Created directory: ${baseDir}`);
+        break;
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        console.log(`Failed to create directory: ${reason}`);
+      }
     }
 
     const sessionsPath = path.resolve(expandHomePath(defaultSessions));
