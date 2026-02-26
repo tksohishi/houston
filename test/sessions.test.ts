@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { clearSession, loadSessions, saveSessions, setHarness, setProjectDir, setSession, type SessionState } from "../src/sessions";
+import { clearSession, loadSessions, saveSessions, setHarness, setLastResponse, setProjectDir, setSession, type SessionState } from "../src/sessions";
 
 function createTempFilePath(): string {
   const dir = mkdtempSync(path.join(tmpdir(), "houston-sessions-"));
@@ -97,12 +97,52 @@ describe("session persistence with new fields", () => {
     setSession(state, "ch1", "00000000-0000-4000-8000-000000000001");
     setProjectDir(state, "ch1", "/projects/test");
     setHarness(state, "ch1", "gemini");
+    setLastResponse(state, "ch1", "old prompt", "old output", "2026-02-26T00:00:00.000Z");
     saveSessions(filePath, state);
 
     const loaded = loadSessions(filePath);
     expect(loaded.ch1?.projectDir).toBe("/projects/test");
     expect(loaded.ch1?.harness).toBe("gemini");
+    expect(loaded.ch1?.lastPrompt).toBe("old prompt");
+    expect(loaded.ch1?.lastOutput).toBe("old output");
+    expect(loaded.ch1?.lastResponseAt).toBe("2026-02-26T00:00:00.000Z");
     // setHarness clears sessionId
     expect(loaded.ch1?.sessionId).toBe("");
+  });
+});
+
+describe("resume cache behavior", () => {
+  test("setProjectDir clears cached response", () => {
+    const state: SessionState = {
+      ch1: {
+        sessionId: "sid",
+        lastUsed: "2026-02-26T00:00:00.000Z",
+        lastPrompt: "old prompt",
+        lastOutput: "old output",
+        lastResponseAt: "2026-02-26T00:00:00.000Z",
+      },
+    };
+
+    setProjectDir(state, "ch1", "/projects/new");
+    expect(state.ch1.lastPrompt).toBeUndefined();
+    expect(state.ch1.lastOutput).toBeUndefined();
+    expect(state.ch1.lastResponseAt).toBeUndefined();
+  });
+
+  test("setHarness clears cached response", () => {
+    const state: SessionState = {
+      ch1: {
+        sessionId: "sid",
+        lastUsed: "2026-02-26T00:00:00.000Z",
+        lastPrompt: "old prompt",
+        lastOutput: "old output",
+        lastResponseAt: "2026-02-26T00:00:00.000Z",
+      },
+    };
+
+    setHarness(state, "ch1", "codex");
+    expect(state.ch1.lastPrompt).toBeUndefined();
+    expect(state.ch1.lastOutput).toBeUndefined();
+    expect(state.ch1.lastResponseAt).toBeUndefined();
   });
 });

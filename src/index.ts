@@ -5,13 +5,18 @@ import { loadConfig, missingConfigErrorMessage } from "./config";
 import { classifyIntent, type ClassifiedCommand } from "./classify";
 import { checkAvailableDrivers, getDriver, isHarnessName } from "./drivers";
 import { ChannelQueue } from "./queue";
-import { ensureConfigFilePermissions, loadSessions, saveSessions, setEditMode, setHarness, setProjectDir, setSession } from "./sessions";
+import { ensureConfigFilePermissions, loadSessions, saveSessions, setEditMode, setHarness, setLastResponse, setProjectDir, setSession } from "./sessions";
 
 const DISCORD_CHAR_LIMIT = 2000;
+const RESUME_PROMPT =
+  "Continue the most recent interrupted response in this channel. Return only the final response text.";
+const MARKDOWN_LINK_REGEX = /\[([^\]\n]+)\]\(([^)\s]+)\)/g;
+const ABSOLUTE_PATH_REGEX = /(^|[\s(<`'"])((?:\/[^/\s`()[\]{}<>:]+){2,}(?::\d+(?::\d+)?)?)/g;
 
 export type HoustonCommand =
   | { type: "edit"; enabled: boolean }
   | { type: "status" }
+  | { type: "resume" }
   | { type: "setup"; projectName: string }
   | { type: "harness"; harnessName: string }
   | { type: "persona"; description: string };
@@ -21,6 +26,7 @@ export function parseCommand(prompt: string): HoustonCommand | null {
   if (trimmed === "/edit on") return { type: "edit", enabled: true };
   if (trimmed === "/edit off") return { type: "edit", enabled: false };
   if (trimmed === "/status") return { type: "status" };
+  if (trimmed === "/resume") return { type: "resume" };
 
   const setupMatch = trimmed.match(/^\/setup\s+(.+)$/);
   if (setupMatch) return { type: "setup", projectName: setupMatch[1].trim() };
@@ -204,8 +210,46 @@ export function splitDiscordMessage(input: string, maxLength = DISCORD_CHAR_LIMI
   return chunks;
 }
 
-async function sendReplyInChunks(message: any, response: string): Promise<void> {
-  const chunks = splitDiscordMessage(response, DISCORD_CHAR_LIMIT);
+function normalizePathSeparators(input: string): string {
+  return input.split(path.sep).join("/");
+}
+
+function toSafeLocation(inputPath: string, baseDir: string): string {
+  const match = inputPath.match(/^(.*?)(:\d+(?::\d+)?)?$/);
+  const filePath = match?.[1] ?? inputPath;
+  const locationSuffix = match?.[2] ?? "";
+  const resolvedPath = path.resolve(filePath);
+
+  if (isSubPath(baseDir, resolvedPath)) {
+    const relativePath = normalizePathSeparators(path.relative(baseDir, resolvedPath));
+    return `${relativePath || "."}${locationSuffix}`;
+  }
+
+  return `<external-path>${locationSuffix}`;
+}
+
+export function sanitizeDiscordReply(input: string, baseDir: string): string {
+  const withoutMaskedLocalLinks = input.replace(MARKDOWN_LINK_REGEX, (_match, label: string, target: string) => {
+    if (/^https?:\/\//i.test(target)) {
+      return `${label}: ${target}`;
+    }
+
+    if (path.isAbsolute(target)) {
+      return `${label} (\`${toSafeLocation(target, baseDir)}\`)`;
+    }
+
+    return `${label} (\`${target}\`)`;
+  });
+
+  return withoutMaskedLocalLinks.replace(
+    ABSOLUTE_PATH_REGEX,
+    (_match, prefix: string, absolutePath: string) => `${prefix}${toSafeLocation(absolutePath, baseDir)}`,
+  );
+}
+
+async function sendReplyInChunks(message: any, response: string, baseDir: string): Promise<void> {
+  const sanitized = sanitizeDiscordReply(response, baseDir);
+  const chunks = splitDiscordMessage(sanitized, DISCORD_CHAR_LIMIT);
 
   for (const chunk of chunks) {
     if (chunk.length <= DISCORD_CHAR_LIMIT) {
@@ -289,6 +333,10 @@ export async function start(): Promise<void> {
     if (verbose) console.log("[houston]", ...args);
   }
 
+  async function reply(message: any, content: string): Promise<void> {
+    await sendReplyInChunks(message, content, config.baseDir);
+  }
+
   let botRoleIds: string[] = [];
 
   client.on("clientReady", () => {
@@ -361,13 +409,13 @@ export async function start(): Promise<void> {
     if (command?.type === "setup") {
       const projectName = command.projectName;
       if (!isValidProjectName(projectName)) {
-        await message.reply("Invalid project name. Use lowercase letters, numbers, hyphens, dots, or underscores.");
+        await reply(message, "Invalid project name. Use lowercase letters, numbers, hyphens, dots, or underscores.");
         return;
       }
 
       const projectDir = path.resolve(config.baseDir, projectName);
       if (!isSubPath(config.baseDir, projectDir)) {
-        await message.reply("Invalid project name.");
+        await reply(message, "Invalid project name.");
         return;
       }
 
@@ -375,7 +423,7 @@ export async function start(): Promise<void> {
         scaffoldProject(projectDir, projectName, channelName);
         console.log(`Created project directory: ${projectDir}`);
       } else if (!statSync(projectDir).isDirectory()) {
-        await message.reply(`Project path exists but is not a directory: \`${projectDir}\``);
+        await reply(message, `Project path exists but is not a directory: \`${projectDir}\``);
         return;
       }
 
@@ -384,7 +432,7 @@ export async function start(): Promise<void> {
 
       const harnessName = sessions[message.channelId]?.harness ?? config.defaultHarness;
       const available = [...availableDrivers];
-      await message.reply(`Project \`${projectName}\` ready at \`${projectDir}\`. Harness: ${harnessName}\nAvailable harnesses: ${available.join(", ") || "none"}`);
+      await reply(message, `Project \`${projectName}\` ready at \`${projectDir}\`. Harness: ${harnessName}\nAvailable harnesses: ${available.join(", ") || "none"}`);
       return;
     }
 
@@ -392,18 +440,18 @@ export async function start(): Promise<void> {
     if (command?.type === "harness") {
       const available = [...availableDrivers];
       if (!isHarnessName(command.harnessName)) {
-        await message.reply(`Unknown harness \`${command.harnessName}\`. Available: ${available.join(", ") || "none"}`);
+        await reply(message, `Unknown harness \`${command.harnessName}\`. Available: ${available.join(", ") || "none"}`);
         return;
       }
 
       if (!availableDrivers.has(command.harnessName)) {
-        await message.reply(`Harness \`${command.harnessName}\` is not installed. Available: ${available.join(", ") || "none"}`);
+        await reply(message, `Harness \`${command.harnessName}\` is not installed. Available: ${available.join(", ") || "none"}`);
         return;
       }
 
       setHarness(sessions, message.channelId, command.harnessName);
       saveSessions(paths.sessionsPath, sessions);
-      await message.reply(`Harness switched to **${command.harnessName}**. Session cleared.`);
+      await reply(message, `Harness switched to **${command.harnessName}**. Session cleared.`);
       return;
     }
 
@@ -420,7 +468,7 @@ export async function start(): Promise<void> {
         const syntheticCommand: HoustonCommand = { type: "setup", projectName: suggested };
         const synthProjectDir = path.resolve(config.baseDir, syntheticCommand.projectName);
         if (!isSubPath(config.baseDir, synthProjectDir)) {
-          await message.reply("Invalid project name.");
+          await reply(message, "Invalid project name.");
           return;
         }
 
@@ -428,7 +476,7 @@ export async function start(): Promise<void> {
           scaffoldProject(synthProjectDir, syntheticCommand.projectName, channelName);
           console.log(`Created project directory: ${synthProjectDir}`);
         } else if (!statSync(synthProjectDir).isDirectory()) {
-          await message.reply(`Project path exists but is not a directory: \`${synthProjectDir}\``);
+          await reply(message, `Project path exists but is not a directory: \`${synthProjectDir}\``);
           return;
         }
 
@@ -437,15 +485,15 @@ export async function start(): Promise<void> {
 
         const harnessName = sessions[message.channelId]?.harness ?? config.defaultHarness;
         const synthAvailable = [...availableDrivers];
-        await message.reply(`Project \`${syntheticCommand.projectName}\` ready at \`${synthProjectDir}\`. Harness: ${harnessName}\nAvailable harnesses: ${synthAvailable.join(", ") || "none"}`);
+        await reply(message, `Project \`${syntheticCommand.projectName}\` ready at \`${synthProjectDir}\`. Harness: ${harnessName}\nAvailable harnesses: ${synthAvailable.join(", ") || "none"}`);
         return;
       }
 
       const botName = client.user?.username ?? "Houston";
       if (suggested) {
-        await message.reply(`To use ${botName} in this channel, you need to set up a local project. Use \`${suggested}\`? Reply **yes** or \`/setup <other-name>\`.`);
+        await reply(message, `To use ${botName} in this channel, you need to set up a local project. Use \`${suggested}\`? Reply **yes** or \`/setup <other-name>\`.`);
       } else {
-        await message.reply(`To use ${botName} in this channel, you need to set up a local project. Use \`/setup <project-name>\` to get started.`);
+        await reply(message, `To use ${botName} in this channel, you need to set up a local project. Use \`/setup <project-name>\` to get started.`);
       }
       return;
     }
@@ -455,7 +503,7 @@ export async function start(): Promise<void> {
       const agentsPath = path.join(projectDir, "AGENTS.md");
       if (!command.description) {
         updatePersona(agentsPath, "");
-        await message.reply("Persona cleared.");
+        await reply(message, "Persona cleared.");
         return;
       }
 
@@ -475,16 +523,16 @@ export async function start(): Promise<void> {
         stopTyping();
         const generated = result.output.trim();
         if (!generated) {
-          await message.reply("Failed to generate persona. Try again with a different description.");
+          await reply(message, "Failed to generate persona. Try again with a different description.");
           return;
         }
 
         updatePersona(agentsPath, generated);
-        await message.reply(`Persona set:\n\n${generated}`);
+        await reply(message, `Persona set:\n\n${generated}`);
       } catch (error) {
         stopTyping();
         log(`Persona generation error: ${error instanceof Error ? error.message : error}`);
-        await message.reply("Failed to generate persona. Try again.");
+        await reply(message, "Failed to generate persona. Try again.");
       }
       return;
     }
@@ -496,7 +544,7 @@ export async function start(): Promise<void> {
       const label = command.enabled
         ? "Edit mode enabled. Claude can now modify files."
         : "Edit mode disabled.";
-      await message.reply(label);
+      await reply(message, label);
       return;
     }
 
@@ -506,15 +554,40 @@ export async function start(): Promise<void> {
       const editLabel = entry?.editMode ? "on" : "off";
       const sessionLabel = entry?.sessionId || "none";
       const installedLabel = availableDrivers.has(harnessName) ? "yes" : "no";
-      await message.reply(
+      await reply(
+        message,
         `**Harness:** ${harnessName} (installed: ${installedLabel})\n**Edit mode:** ${editLabel}\n**Session:** ${sessionLabel}\n**Project:** ${projectDir}`,
       );
       return;
     }
 
+    // /resume command
+    if (command?.type === "resume") {
+      if (queue.isRunning(message.channelId)) {
+        await reply(message, "A request is still running in this channel. Please wait for it to finish.");
+        return;
+      }
+
+      const cached = entry?.lastOutput?.trim();
+      if (cached) {
+        await reply(message, cached);
+        return;
+      }
+
+      const harnessName = entry?.harness ?? config.defaultHarness;
+      const driver = getDriver(harnessName);
+      const sessionId = entry?.sessionId || "";
+      if (!sessionId || !driver.isValidSessionId(sessionId)) {
+        await reply(message, "Nothing to resume yet. There is no cached output or active session in this channel.");
+        return;
+      }
+
+      prompt = RESUME_PROMPT;
+    }
+
     // When the user replies to a specific bot message, prepend its content
     // so the harness knows what "this", "that", etc. refer to.
-    if (isReplyToBot && repliedMessage?.content) {
+    if (command?.type !== "resume" && isReplyToBot && repliedMessage?.content) {
       const quoted = repliedMessage.content.slice(0, 1000);
       prompt = `[Replying to your previous message: "${quoted}"]\n\n${prompt}`;
     }
@@ -524,7 +597,7 @@ export async function start(): Promise<void> {
 
     await queue.enqueue(message.channelId, async () => {
       if (!existsSync(projectDir)) {
-        await message.reply(`Project directory not found: \`${projectDir}\`. Run \`/setup <name>\` again.`);
+        await reply(message, `Project directory not found: \`${projectDir}\`. Run \`/setup <name>\` again.`);
         return;
       }
 
@@ -589,7 +662,10 @@ export async function start(): Promise<void> {
           output += "\n\nTip: use `/edit on` to allow file modifications.";
         }
 
-        await sendReplyInChunks(message, output);
+        setLastResponse(sessions, message.channelId, prompt, output);
+        saveSessions(paths.sessionsPath, sessions);
+
+        await reply(message, output);
 
         if (result.sessionId && driver.isValidSessionId(result.sessionId)) {
           setSession(sessions, message.channelId, result.sessionId);
@@ -601,7 +677,7 @@ export async function start(): Promise<void> {
         log(`${driver.name} error: ${error instanceof Error ? error.message : error}`);
         const formatted = formatCommandError(error);
         const body = `\`\`\`\n${formatted.slice(0, 3900)}\n\`\`\``;
-        await message.reply(body);
+        await reply(message, body);
       }
     });
   });

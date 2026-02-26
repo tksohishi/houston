@@ -9,6 +9,9 @@ export interface SessionStateEntry {
   editMode?: boolean;
   projectDir?: string;
   harness?: HarnessName;
+  lastPrompt?: string;
+  lastOutput?: string;
+  lastResponseAt?: string;
 }
 
 export type SessionState = Record<string, SessionStateEntry>;
@@ -42,6 +45,9 @@ export function loadSessions(filePath: string): SessionState {
         editMode: entry.editMode === true ? true : undefined,
         projectDir: typeof entry.projectDir === "string" ? entry.projectDir : undefined,
         harness: typeof entry.harness === "string" && isHarnessName(entry.harness) ? entry.harness : undefined,
+        lastPrompt: typeof entry.lastPrompt === "string" ? entry.lastPrompt : undefined,
+        lastOutput: typeof entry.lastOutput === "string" ? entry.lastOutput : undefined,
+        lastResponseAt: typeof entry.lastResponseAt === "string" ? entry.lastResponseAt : undefined,
       };
     }
 
@@ -82,6 +88,9 @@ export function setSession(
     editMode: existing?.editMode,
     projectDir: existing?.projectDir,
     harness: existing?.harness,
+    lastPrompt: existing?.lastPrompt,
+    lastOutput: existing?.lastOutput,
+    lastResponseAt: existing?.lastResponseAt,
   };
 }
 
@@ -99,6 +108,9 @@ export function setProjectDir(sessions: SessionState, channelId: string, project
   if (existing) {
     existing.projectDir = projectDir;
     existing.sessionId = "";
+    existing.lastPrompt = undefined;
+    existing.lastOutput = undefined;
+    existing.lastResponseAt = undefined;
   } else {
     sessions[channelId] = { sessionId: "", lastUsed: new Date().toISOString(), projectDir };
   }
@@ -110,9 +122,36 @@ export function setHarness(sessions: SessionState, channelId: string, harness: H
     existing.harness = harness;
     existing.sessionId = "";
     existing.editMode = undefined;
+    existing.lastPrompt = undefined;
+    existing.lastOutput = undefined;
+    existing.lastResponseAt = undefined;
   } else {
     sessions[channelId] = { sessionId: "", lastUsed: new Date().toISOString(), harness };
   }
+}
+
+export function setLastResponse(
+  sessions: SessionState,
+  channelId: string,
+  prompt: string,
+  output: string,
+  lastResponseAt = new Date().toISOString(),
+): void {
+  const existing = sessions[channelId];
+  if (existing) {
+    existing.lastPrompt = prompt;
+    existing.lastOutput = output;
+    existing.lastResponseAt = lastResponseAt;
+    return;
+  }
+
+  sessions[channelId] = {
+    sessionId: "",
+    lastUsed: lastResponseAt,
+    lastPrompt: prompt,
+    lastOutput: output,
+    lastResponseAt,
+  };
 }
 
 export function clearSession(sessions: SessionState, channelId: string): boolean {

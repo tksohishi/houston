@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { classifiedToCommand, isSubPath, isValidProjectName, parseCommand, sanitizeChannelName, scaffoldProject, splitDiscordMessage, stripBotMention, updatePersona } from "../src/index";
+import { classifiedToCommand, isSubPath, isValidProjectName, parseCommand, sanitizeChannelName, sanitizeDiscordReply, scaffoldProject, splitDiscordMessage, stripBotMention, updatePersona } from "../src/index";
 
 describe("isSubPath", () => {
   test("accepts direct children and rejects parents", () => {
@@ -64,6 +64,10 @@ describe("parseCommand", () => {
     expect(parseCommand("/status")).toEqual({ type: "status" });
   });
 
+  test("parses /resume", () => {
+    expect(parseCommand("/resume")).toEqual({ type: "resume" });
+  });
+
   test("parses /setup with project name", () => {
     expect(parseCommand("/setup my-project")).toEqual({ type: "setup", projectName: "my-project" });
     expect(parseCommand("/setup  test-app ")).toEqual({ type: "setup", projectName: "test-app" });
@@ -122,6 +126,48 @@ describe("discord message splitting", () => {
       expect(chunk).not.toContain("wo\n");
     }
     expect(chunks).toEqual(["word1", "word2", "word3"]);
+  });
+});
+
+describe("discord reply sanitizing", () => {
+  test("converts absolute paths inside base directory to relative locations", () => {
+    const output = sanitizeDiscordReply(
+      "Saved at /Users/alex/work/projects/my-app/src/index.ts:42",
+      "/Users/alex/work/projects",
+    );
+    expect(output).toBe("Saved at my-app/src/index.ts:42");
+  });
+
+  test("redacts absolute paths outside base directory", () => {
+    const output = sanitizeDiscordReply(
+      "Read from /Users/alex/.ssh/id_rsa",
+      "/Users/alex/work/projects",
+    );
+    expect(output).toBe("Read from <external-path>");
+  });
+
+  test("converts local markdown links to safe text with location", () => {
+    const output = sanitizeDiscordReply(
+      "[index.ts](/Users/alex/work/projects/my-app/src/index.ts:9)",
+      "/Users/alex/work/projects",
+    );
+    expect(output).toBe("index.ts (`my-app/src/index.ts:9`)");
+  });
+
+  test("converts external markdown links to explicit URL text", () => {
+    const output = sanitizeDiscordReply(
+      "[Docs](https://example.com/path)",
+      "/Users/alex/work/projects",
+    );
+    expect(output).toBe("Docs: https://example.com/path");
+  });
+
+  test("does not rewrite slash commands", () => {
+    const output = sanitizeDiscordReply(
+      "Run /setup my-project to bind this channel.",
+      "/Users/alex/work/projects",
+    );
+    expect(output).toBe("Run /setup my-project to bind this channel.");
   });
 });
 
@@ -194,8 +240,7 @@ describe("scaffoldProject", () => {
 
     // AGENTS.md created, but existing CLAUDE.md untouched
     expect(existsSync(path.join(dir, "AGENTS.md"))).toBe(true);
-    const content = Bun.file(path.join(dir, "CLAUDE.md")).textSync?.() ??
-      require("node:fs").readFileSync(path.join(dir, "CLAUDE.md"), "utf8");
+    const content = readFileSync(path.join(dir, "CLAUDE.md"), "utf8");
     expect(content).toBe("custom content");
   });
 });
