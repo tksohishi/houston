@@ -65,6 +65,7 @@ export function saveSessions(filePath: string, sessions: SessionState): void {
   const body = JSON.stringify(sessions, null, 2);
   writeFileSync(tempPath, body, "utf8");
   renameSync(tempPath, filePath);
+  chmodSync(filePath, 0o600);
 }
 
 export function ensureConfigFilePermissions(filePath: string): void {

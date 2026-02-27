@@ -678,7 +678,7 @@ export async function start(): Promise<void> {
       setEditMode(sessions, message.channelId, command.enabled);
       saveSessions(paths.sessionsPath, sessions);
       const label = command.enabled
-        ? "Edit mode enabled. Claude can now modify files."
+        ? "Edit mode enabled. The selected harness can now modify files."
         : "Edit mode disabled.";
       await reply(message, label);
       return;

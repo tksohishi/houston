@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { clearSession, loadSessions, saveSessions, setHarness, setLastResponse, setProjectDir, setSession, type SessionState } from "../src/sessions";
@@ -25,6 +25,16 @@ describe("session persistence", () => {
     const loaded = loadSessions(filePath);
     expect(loaded["123"]?.sessionId).toBe("00000000-0000-4000-8000-000000000001");
     expect(loaded["123"]?.lastUsed).toBe("2026-02-21T00:00:00.000Z");
+  });
+
+  test("writes sessions file with restricted permissions", () => {
+    const filePath = createTempFilePath();
+    const state: SessionState = {};
+    setSession(state, "123", "00000000-0000-4000-8000-000000000001", "2026-02-21T00:00:00.000Z");
+    saveSessions(filePath, state);
+
+    const mode = statSync(filePath).mode & 0o777;
+    expect(mode).toBe(0o600);
   });
 
   test("handles malformed json by returning empty object", () => {

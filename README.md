@@ -45,6 +45,11 @@ This creates `<baseDir>/my-project` (if missing), scaffolds a `CLAUDE.md`, and b
 | `/harness claude\|codex\|gemini` | Switch harness for channel (clears session) |
 | `/edit on\|off` | Toggle edit mode |
 | `/status` | Show harness, edit mode, session, project |
+| `/resume` | Return cached last output, or continue active session when available |
+| `/persona <description>` | Generate and set persona text in `AGENTS.md` |
+| `/persona clear` | Clear persona section from `AGENTS.md` |
+| `/icon` | Set server-specific bot icon from one attached image (Manage Server required) |
+| `/icon clear` | Clear server-specific bot icon (Manage Server required) |
 
 ## Run
 
@@ -60,11 +65,12 @@ The test suite covers:
 - channel binding and message splitting
 - session file load and save behavior
 - NDJSON stream parsing helpers
-- command parsing (/setup, /harness, /edit, /status)
+- command parsing (/setup, /harness, /edit, /status, /resume, /persona, /icon)
 
 ## Notes
 
 - Houston runs the selected harness CLI with headless flags and NDJSON output.
-- Houston only runs when a message starts with a bot mention in a bound channel; regular chat is ignored.
+- Houston runs on bot mention or direct reply to a bot message in bound channels.
+- In unbound channels, a bare mention returns setup help once; repeated bare mentions are ignored until a non-empty prompt is sent.
 - The default harness is configurable (`defaultHarness` in config.json). Per-channel overrides are set via `/harness`.
 - At startup, Houston checks which harness binaries are installed and logs availability. The `/harness` command only allows switching to installed harnesses.
