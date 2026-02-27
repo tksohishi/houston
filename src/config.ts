@@ -8,6 +8,7 @@ export interface HoustonConfig {
   token: string;
   defaultHarness: HarnessName;
   baseDir: string;
+  geminiEditOffPolicy?: string;
 }
 
 export interface ResolvedPaths {
@@ -160,7 +161,7 @@ function isValidHarnessName(value: unknown): value is HarnessName {
 
 export function loadConfigFromPath(configPath: string, cwd = process.cwd()): HoustonConfig {
   const parsed = readJsonFile(configPath);
-  return validateConfig(parsed, cwd);
+  return validateConfig(parsed, cwd, path.dirname(configPath));
 }
 
 export function loadConfig(
@@ -171,7 +172,24 @@ export function loadConfig(
   return { config, paths };
 }
 
-export function validateConfig(value: unknown, cwd = process.cwd()): HoustonConfig {
+function resolveOptionalPath(value: unknown, resolveDir: string): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  return path.resolve(resolveDir, expandHomePath(trimmed));
+}
+
+export function validateConfig(
+  value: unknown,
+  cwd = process.cwd(),
+  configDir = cwd,
+): HoustonConfig {
   if (!value || typeof value !== "object") {
     throw new Error("config.json must contain a JSON object");
   }
@@ -182,6 +200,7 @@ export function validateConfig(value: unknown, cwd = process.cwd()): HoustonConf
     ? input.defaultHarness
     : DEFAULT_HARNESS;
   const baseDirInput = typeof input.baseDir === "string" ? input.baseDir.trim() : "";
+  const geminiEditOffPolicy = resolveOptionalPath(input.geminiEditOffPolicy, configDir);
   if (!token) {
     throw new Error("config.json is missing required field: token");
   }
@@ -194,6 +213,7 @@ export function validateConfig(value: unknown, cwd = process.cwd()): HoustonConf
     token,
     defaultHarness,
     baseDir: path.resolve(cwd, expandHomePath(baseDirInput)),
+    geminiEditOffPolicy,
   };
 }
 

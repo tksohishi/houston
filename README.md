@@ -24,8 +24,11 @@ Houston is a remote command center for AI coding agents, operated through Discor
    - invite URL generation
    - token and application ID prompts with validation
    - default harness selection (claude, codex, or gemini)
+   - optional Gemini trusted folder update for selected base directory
+   - optional Gemini policy files for edit-off mode
 4. Setup writes config to `${XDG_CONFIG_HOME:-~/.config}/houston/config.json` by default.
-5. Sessions are stored at `${XDG_STATE_HOME:-~/.local/state}/houston/sessions.json` by default.
+5. Setup can create `${XDG_CONFIG_HOME:-~/.config}/houston/policies/gemini/*.toml`.
+6. Sessions are stored at `${XDG_STATE_HOME:-~/.local/state}/houston/sessions.json` by default.
 
 ## Channel Binding
 
@@ -66,6 +69,7 @@ The test suite covers:
 - session file load and save behavior
 - NDJSON stream parsing helpers
 - command parsing (/setup, /harness, /edit, /status, /resume, /persona, /icon)
+- Gemini argument handling with optional edit-off policy
 
 ## Notes
 
@@ -73,4 +77,5 @@ The test suite covers:
 - Houston runs on bot mention or direct reply to a bot message in bound channels.
 - In unbound channels, a bare mention returns setup help once; repeated bare mentions are ignored until a non-empty prompt is sent.
 - The default harness is configurable (`defaultHarness` in config.json). Per-channel overrides are set via `/harness`.
+- Optional `geminiEditOffPolicy` in config enables Gemini `--approval-mode yolo` with `--policy` while edit mode is off.
 - At startup, Houston checks which harness binaries are installed and logs availability. The `/harness` command only allows switching to installed harnesses.

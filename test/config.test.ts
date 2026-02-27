@@ -117,6 +117,20 @@ describe("config validation", () => {
     expect(config.defaultHarness).toBe("claude");
   });
 
+  test("accepts optional geminiEditOffPolicy", () => {
+    const cwd = tempDir("houston-config-");
+    const config = validateConfig(
+      {
+        token: "test-token",
+        baseDir: "./projects",
+        geminiEditOffPolicy: "./policies/gemini/edit-off.toml",
+      },
+      cwd,
+    );
+
+    expect(config.geminiEditOffPolicy).toBe(path.join(cwd, "policies", "gemini", "edit-off.toml"));
+  });
+
   test("throws on missing token", () => {
     expect(() =>
       validateConfig({
@@ -143,5 +157,25 @@ describe("config validation", () => {
     expect(config.token).toBe("abc");
     expect(config.baseDir).toBe("/tmp/projects");
     expect(config.defaultHarness).toBe("claude");
+  });
+
+  test("resolves geminiEditOffPolicy relative to config file path", () => {
+    const dir = tempDir("houston-config-");
+    const nestedConfigDir = path.join(dir, ".config", "houston");
+    const filePath = path.join(nestedConfigDir, "config.json");
+    mkdirSync(nestedConfigDir, { recursive: true });
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        token: "abc",
+        defaultHarness: "gemini",
+        baseDir: "/tmp/projects",
+        geminiEditOffPolicy: "./policies/gemini/edit-off.toml",
+      }),
+      "utf8",
+    );
+
+    const config = loadConfigFromPath(filePath, "/tmp/unrelated-cwd");
+    expect(config.geminiEditOffPolicy).toBe(path.join(nestedConfigDir, "policies", "gemini", "edit-off.toml"));
   });
 });

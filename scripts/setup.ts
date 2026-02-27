@@ -7,9 +7,61 @@ import { REST, Routes } from "discord.js";
 import { defaultConfigPath, defaultSessionsPath, defaults, expandHomePath } from "../src/config";
 import { parseSetupFlags } from "../src/setup-flags";
 import { resetConfigAndSessions } from "../src/setup-reset";
-import { buildBotInviteUrl, isValidDiscordId, looksLikeDiscordToken } from "../src/setup-utils";
+import {
+  buildBotInviteUrl,
+  geminiTrustedFoldersPath,
+  isValidDiscordId,
+  looksLikeDiscordToken,
+  trustGeminiFolder,
+} from "../src/setup-utils";
 
 const SUPPORTED_HARNESSES = ["claude", "codex", "gemini"] as const;
+const GEMINI_POLICY_DIR_RELATIVE = path.join("policies", "gemini");
+const GEMINI_EDIT_OFF_POLICY_NAME = "edit-off.toml";
+const GEMINI_SHELL_GUARD_POLICY_NAME = "shell-guard.toml";
+const GEMINI_MCP_GUARD_POLICY_NAME = "mcp-guard.toml";
+
+const GEMINI_EDIT_OFF_POLICY_TOML = [
+  '# Houston policy: keep Gemini in yolo mode for CLI/API tools while edit mode is off, block direct file edits.',
+  "[[rule]]",
+  'modes = ["yolo"]',
+  'toolName = ["write_file", "replace"]',
+  'decision = "deny"',
+  "priority = 900",
+  'deny_message = "Edit mode is off in Houston."',
+  "",
+].join("\n");
+
+const GEMINI_SHELL_GUARD_POLICY_TOML = [
+  '# Optional template: tighten shell safety when running Gemini in yolo mode.',
+  '# Not active by default, add this file with another --policy flag or policyPaths if needed.',
+  "",
+  "[[rule]]",
+  'modes = ["yolo"]',
+  'toolName = "run_shell_command"',
+  'commandPrefix = ["rm -rf", "sudo ", "mkfs", "dd if=", "git push --force"]',
+  'decision = "deny"',
+  "priority = 950",
+  'deny_message = "Command blocked by shell guard policy."',
+  "",
+].join("\n");
+
+const GEMINI_MCP_GUARD_POLICY_TOML = [
+  '# Optional template: restrict MCP tools by server name.',
+  '# Replace placeholders with real server names before use.',
+  "",
+  "[[rule]]",
+  'mcpName = "replace-with-trusted-server"',
+  'decision = "allow"',
+  "priority = 300",
+  "",
+  "[[rule]]",
+  'mcpName = "replace-with-untrusted-server"',
+  'decision = "deny"',
+  "priority = 500",
+  'deny_message = "MCP server is not trusted."',
+  "",
+].join("\n");
 
 function withDefault(value: string, fallback: string): string {
   return value.trim().length > 0 ? value.trim() : fallback;
@@ -27,6 +79,14 @@ function normalizeYesNo(value: string, defaultYes: boolean): boolean {
     return false;
   }
   return defaultYes;
+}
+
+function writeFileIfMissing(filePath: string, content: string): "created" | "existing" {
+  if (existsSync(filePath)) {
+    return "existing";
+  }
+  writeFileSync(filePath, content, "utf8");
+  return "created";
 }
 
 async function promptRequired(
@@ -223,14 +283,60 @@ async function main(): Promise<void> {
       }
     }
 
+    const trustBaseDirForGemini = normalizeYesNo(
+      await ask("Trust base project directory for Gemini CLI? [Y/n]: "),
+      true,
+    );
+    if (trustBaseDirForGemini) {
+      try {
+        const trustResult = trustGeminiFolder(baseDir, { setting: "TRUST_PARENT" });
+        console.log(
+          trustResult.changed
+            ? `Gemini trusted folders updated at ${trustResult.trustPath}`
+            : `Gemini trusted folders already includes ${baseDir}`,
+        );
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        console.log(`Failed to update Gemini trusted folders: ${reason}`);
+        console.log(`You can update it manually at ${geminiTrustedFoldersPath()}`);
+      }
+    }
+
+    const policyDir = path.join(path.dirname(configPath), GEMINI_POLICY_DIR_RELATIVE);
+    const setupGeminiPolicy = normalizeYesNo(
+      await ask("Create Gemini edit-off policy files? [Y/n]: "),
+      true,
+    );
+    let geminiEditOffPolicy: string | undefined;
+    if (setupGeminiPolicy) {
+      mkdirSync(policyDir, { recursive: true });
+      const editOffPolicyPath = path.join(policyDir, GEMINI_EDIT_OFF_POLICY_NAME);
+      const shellGuardPolicyPath = path.join(policyDir, GEMINI_SHELL_GUARD_POLICY_NAME);
+      const mcpGuardPolicyPath = path.join(policyDir, GEMINI_MCP_GUARD_POLICY_NAME);
+
+      const editOffState = writeFileIfMissing(editOffPolicyPath, GEMINI_EDIT_OFF_POLICY_TOML);
+      const shellGuardState = writeFileIfMissing(shellGuardPolicyPath, GEMINI_SHELL_GUARD_POLICY_TOML);
+      const mcpGuardState = writeFileIfMissing(mcpGuardPolicyPath, GEMINI_MCP_GUARD_POLICY_TOML);
+
+      geminiEditOffPolicy = editOffPolicyPath;
+      console.log(`Gemini policy directory: ${policyDir}`);
+      console.log(`- ${GEMINI_EDIT_OFF_POLICY_NAME}: ${editOffState}`);
+      console.log(`- ${GEMINI_SHELL_GUARD_POLICY_NAME}: ${shellGuardState}`);
+      console.log(`- ${GEMINI_MCP_GUARD_POLICY_NAME}: ${mcpGuardState}`);
+    }
+
     const sessionsPath = path.resolve(expandHomePath(defaultSessions));
+    const configObject: Record<string, unknown> = {
+      token,
+      applicationId,
+      defaultHarness: harness,
+      baseDir,
+    };
+    if (geminiEditOffPolicy) {
+      configObject.geminiEditOffPolicy = geminiEditOffPolicy;
+    }
     const configBody = JSON.stringify(
-      {
-        token,
-        applicationId,
-        defaultHarness: harness,
-        baseDir,
-      },
+      configObject,
       null,
       2,
     );
@@ -243,6 +349,9 @@ async function main(): Promise<void> {
     console.log("");
     console.log(`Wrote config to ${configPath}`);
     console.log(`Sessions file will be stored at ${sessionsPath}`);
+    if (geminiEditOffPolicy) {
+      console.log(`Gemini edit-off policy: ${geminiEditOffPolicy}`);
+    }
     console.log("Use --sessions or HOUSTON_SESSIONS to override the sessions path.");
     console.log("Use `bun run setup -- --reset` for clean reset during testing.");
     console.log("Houston runs only when someone mentions the bot in a watched channel.");

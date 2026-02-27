@@ -362,6 +362,11 @@ export async function start(): Promise<void> {
 
   const { config, paths } = loaded;
   ensureConfigFilePermissions(paths.configPath);
+  let geminiEditOffPolicyPath = config.geminiEditOffPolicy;
+  if (geminiEditOffPolicyPath && !existsSync(geminiEditOffPolicyPath)) {
+    console.warn(`[houston] Gemini edit-off policy not found, continuing without it: ${geminiEditOffPolicyPath}`);
+    geminiEditOffPolicyPath = undefined;
+  }
 
   const sessions = loadSessions(paths.sessionsPath);
   const queue = new ChannelQueue();
@@ -392,6 +397,9 @@ export async function start(): Promise<void> {
     console.log(`Default harness: ${config.defaultHarness}`);
     console.log(`Available harnesses: ${[...availableDrivers].join(", ") || "none"}`);
     console.log(`Base directory: ${config.baseDir}`);
+    if (geminiEditOffPolicyPath) {
+      console.log(`Gemini edit-off policy: ${geminiEditOffPolicyPath}`);
+    }
 
     // Collect managed role IDs so @Role mentions also trigger the bot
     const botId = client.user?.id;
@@ -653,6 +661,7 @@ export async function start(): Promise<void> {
           projectDir,
           driver,
           editMode: false,
+          policyPath: geminiEditOffPolicyPath,
           timeoutMs: 2 * 60 * 1000,
         });
 
@@ -755,6 +764,7 @@ export async function start(): Promise<void> {
         projectDir,
         driver,
         editMode,
+        policyPath: geminiEditOffPolicyPath,
         timeoutMs: 10 * 60 * 1000,
         onSpawn: (pid: number) => log(`${driver.name} process started (pid ${pid})`),
         onEvent: (event: StreamJsonEvent) => {
@@ -784,11 +794,10 @@ export async function start(): Promise<void> {
         log(`${driver.name} finished: ${result.output.length} chars, session ${result.sessionId ?? "none"}`);
         log(`Output:\n${result.output}`);
 
-        let output = result.output.trim().length > 0 ? result.output.trim() : "No assistant text returned.";
-
-        if (editMode) {
-          output = `**[edit]** ${output}`;
-        }
+        const harnessDisplayName = harnessName.charAt(0).toUpperCase() + harnessName.slice(1);
+        const modeHeader = `🤖 ${harnessDisplayName} | ✍️ Edit ${editMode ? "on" : "off"}`;
+        const body = result.output.trim().length > 0 ? result.output.trim() : "No assistant text returned.";
+        let output = `${modeHeader}\n${body}`;
 
         log(`Permission denials: ${JSON.stringify(result.permissionDenials)}`);
         const hasEditDenial = result.permissionDenials.some(

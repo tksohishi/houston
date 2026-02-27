@@ -8,11 +8,13 @@ export const geminiDriver: HarnessDriver = {
   binary: "gemini",
   textSeparator: "",
 
-  buildArgs({ prompt, sessionId, editMode }) {
+  buildArgs({ prompt, sessionId, editMode, policyPath }) {
     const args = ["-p", prompt, "-o", "stream-json"];
 
     if (editMode) {
       args.push("--approval-mode", "yolo");
+    } else if (policyPath) {
+      args.push("--approval-mode", "yolo", "--policy", policyPath);
     }
 
     if (sessionId) {
