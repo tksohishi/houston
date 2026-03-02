@@ -978,6 +978,13 @@ export async function start(): Promise<void> {
         onSpawn: (pid: number) => log(`${driver.name} process started (pid ${pid})`),
         onEvent: (event: StreamJsonEvent) => {
           if (event.type) log(`Event: ${event.type}${event.session_id ? ` session=${event.session_id}` : ""}`);
+          if (event.type === "assistant" && Array.isArray(event.message?.content)) {
+            for (const block of event.message!.content) {
+              if (block.type === "thinking" && typeof (block as Record<string, unknown>).thinking === "string") {
+                log(`Thinking: ${(block as Record<string, unknown>).thinking}`);
+              }
+            }
+          }
         },
         onMalformedJson: (line: string, source: "stdout" | "stderr") => {
           console.warn(`[malformed-json][${source}] ${line}`);
