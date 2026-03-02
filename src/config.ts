@@ -9,6 +9,7 @@ export interface HoustonConfig {
   defaultHarness: HarnessName;
   baseDir: string;
   geminiEditOffPolicy?: string;
+  constitutionPath?: string;
 }
 
 export interface ResolvedPaths {
@@ -201,6 +202,7 @@ export function validateConfig(
     : DEFAULT_HARNESS;
   const baseDirInput = typeof input.baseDir === "string" ? input.baseDir.trim() : "";
   const geminiEditOffPolicy = resolveOptionalPath(input.geminiEditOffPolicy, configDir);
+  const constitutionPath = resolveOptionalPath(input.constitutionPath, configDir);
   if (!token) {
     throw new Error("config.json is missing required field: token");
   }
@@ -214,6 +216,7 @@ export function validateConfig(
     defaultHarness,
     baseDir: path.resolve(cwd, expandHomePath(baseDirInput)),
     geminiEditOffPolicy,
+    constitutionPath,
   };
 }
 

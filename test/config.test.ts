@@ -178,4 +178,24 @@ describe("config validation", () => {
     const config = loadConfigFromPath(filePath, "/tmp/unrelated-cwd");
     expect(config.geminiEditOffPolicy).toBe(path.join(nestedConfigDir, "policies", "gemini", "edit-off.toml"));
   });
+
+  test("resolves constitutionPath relative to config file path", () => {
+    const dir = tempDir("houston-config-");
+    const nestedConfigDir = path.join(dir, ".config", "houston");
+    const filePath = path.join(nestedConfigDir, "config.json");
+    mkdirSync(nestedConfigDir, { recursive: true });
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        token: "abc",
+        defaultHarness: "gemini",
+        baseDir: "/tmp/projects",
+        constitutionPath: "./constitution.json",
+      }),
+      "utf8",
+    );
+
+    const config = loadConfigFromPath(filePath, "/tmp/unrelated-cwd");
+    expect(config.constitutionPath).toBe(path.join(nestedConfigDir, "constitution.json"));
+  });
 });
