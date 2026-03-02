@@ -5,6 +5,7 @@ Houston is a remote command center for AI coding agents, operated through Discor
 ## Prerequisites
 
 - [Bun](https://bun.sh/)
+- [gitleaks](https://github.com/gitleaks/gitleaks)
 - At least one supported CLI installed and authenticated:
   - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`)
   - [Codex CLI](https://github.com/openai/codex) (`codex`)
@@ -13,8 +14,9 @@ Houston is a remote command center for AI coding agents, operated through Discor
 
 ## Setup Flow
 
-1. Install dependencies:
-   - `bun install`
+1. Bootstrap local development:
+   - `bun run bootstrap`
+   - installs dependencies and sets `.git/hooks/pre-commit` to run `gitleaks git --staged`
 2. Run setup:
    - `bun run setup`
    - clean reset first: `bun run reset`
