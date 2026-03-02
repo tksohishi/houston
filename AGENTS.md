@@ -14,6 +14,10 @@ Houston is a remote command center for AI coding agents, operated through Discor
 
 ### Background processes
 
-When running Houston as a background task, always `TaskStop` the previous instance before starting a new one. Multiple bot processes cause Discord gateway conflicts and silently break message handling.
+When running Houston as a background task, always stop the previous instance before starting a new one. Multiple bot processes cause Discord gateway conflicts and silently break message handling.
+
+If your harness does not provide a built-in stop action, use:
+
+`pkill -f 'bun.*src/index.ts'`
 
 `bun dev` uses `--watch`, so source file changes auto-restart. Only restart manually for `package.json`, config, or dependency changes.
