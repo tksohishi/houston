@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "bun run src/index.ts",
-    "dev": "bun --watch run src/index.ts --verbose",
+    "dev": "mkdir -p tmp && pkill -f 'bun.*src/index.ts' 2>/dev/null; sleep 0.5 && bun --watch run src/index.ts --verbose 2>&1 | tee -a tmp/houston.log",
     "setup": "bun run scripts/setup.ts",
     "reset": "bun run scripts/setup.ts --reset-only",
     "test": "bun test",
