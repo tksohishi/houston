@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-gitleaks git --staged
+gitleaks git --staged --no-banner
