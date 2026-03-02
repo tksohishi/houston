@@ -8,7 +8,7 @@ export const claudeDriver: HarnessDriver = {
   binary: "claude",
   textSeparator: "\n\n",
 
-  buildArgs({ prompt, sessionId, editMode }) {
+  buildArgs({ prompt, sessionId, permissionLevel }) {
     const args = [
       "-p",
       "--verbose",
@@ -16,8 +16,10 @@ export const claudeDriver: HarnessDriver = {
       "stream-json",
     ];
 
-    if (editMode) {
+    if (permissionLevel === "yolo") {
       args.push("--dangerously-skip-permissions");
+    } else if (permissionLevel === "edit") {
+      args.push("--permission-mode", "acceptEdits");
     } else {
       args.push("--permission-mode", "dontAsk");
     }

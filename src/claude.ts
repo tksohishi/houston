@@ -26,7 +26,7 @@ export function buildClaudeArgs(prompt: string, sessionId?: string, dangerouslyS
   return claudeDriver.buildArgs({
     prompt,
     sessionId,
-    editMode: dangerouslySkipPermissions ?? false,
+    permissionLevel: dangerouslySkipPermissions ? "yolo" : "off",
   });
 }
 

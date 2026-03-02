@@ -1,11 +1,12 @@
 export type HarnessName = "claude" | "gemini" | "codex";
+export type PermissionLevel = "off" | "edit" | "yolo";
 
 export interface HarnessDriver {
   name: string;
   binary: string;
   textSeparator: string;
   assistantTextMode?: "append" | "latest";
-  buildArgs(opts: { prompt: string; sessionId?: string; editMode: boolean; policyPath?: string }): string[];
+  buildArgs(opts: { prompt: string; sessionId?: string; permissionLevel: PermissionLevel; policyPath?: string }): string[];
   buildEnv(env: Record<string, string | undefined>): Record<string, string | undefined>;
   extractSessionId(event: Record<string, unknown>): string | undefined;
   extractAssistantText(event: Record<string, unknown>): string;
@@ -29,7 +30,7 @@ export interface HarnessRunOptions {
   projectDir: string;
   driver: HarnessDriver;
   sessionId?: string;
-  editMode?: boolean;
+  permissionLevel?: PermissionLevel;
   policyPath?: string;
   timeoutMs?: number;
   onSpawn?: (pid: number) => void;
@@ -147,7 +148,7 @@ export async function runHarness(options: HarnessRunOptions): Promise<HarnessRun
   const args = driver.buildArgs({
     prompt: options.prompt,
     sessionId: options.sessionId,
-    editMode: options.editMode ?? false,
+    permissionLevel: options.permissionLevel ?? "off",
     policyPath: options.policyPath,
   });
   const env = driver.buildEnv({ ...process.env });

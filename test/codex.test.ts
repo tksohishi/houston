@@ -9,8 +9,8 @@ describe("codex argument builder", () => {
     expect(codexDriver.assistantTextMode).toBe("latest");
   });
 
-  test("builds read-only args with network access when edit mode is off", () => {
-    const args = codexDriver.buildArgs({ prompt: "hello world", editMode: false });
+  test("off: builds read-only args with network access", () => {
+    const args = codexDriver.buildArgs({ prompt: "hello world", permissionLevel: "off" });
     expect(args).toEqual([
       "exec",
       "--json",
@@ -23,8 +23,22 @@ describe("codex argument builder", () => {
     ]);
   });
 
-  test("builds full-auto args with network access when edit mode is on", () => {
-    const args = codexDriver.buildArgs({ prompt: "fix the bug", editMode: true });
+  test("edit: builds workspace-write args with network access", () => {
+    const args = codexDriver.buildArgs({ prompt: "fix the bug", permissionLevel: "edit" });
+    expect(args).toEqual([
+      "exec",
+      "--json",
+      "--skip-git-repo-check",
+      "--sandbox",
+      "workspace-write",
+      "-c",
+      "sandbox_workspace_write.network_access=true",
+      withFinalOnly("fix the bug"),
+    ]);
+  });
+
+  test("yolo: builds full-auto args with network access", () => {
+    const args = codexDriver.buildArgs({ prompt: "fix the bug", permissionLevel: "yolo" });
     expect(args).toEqual([
       "exec",
       "--json",
@@ -38,7 +52,7 @@ describe("codex argument builder", () => {
 
   test("includes resume with session id", () => {
     const sid = "550e8400-e29b-41d4-a716-446655440000";
-    const args = codexDriver.buildArgs({ prompt: "continue", sessionId: sid, editMode: false });
+    const args = codexDriver.buildArgs({ prompt: "continue", sessionId: sid, permissionLevel: "off" });
     expect(args).toEqual([
       "exec",
       "--json",

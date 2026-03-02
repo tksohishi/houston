@@ -16,11 +16,14 @@ export const codexDriver: HarnessDriver = {
   textSeparator: "\n\n",
   assistantTextMode: "latest",
 
-  buildArgs({ prompt, sessionId, editMode }) {
+  buildArgs({ prompt, sessionId, permissionLevel }) {
     const args = ["exec", "--json", "--skip-git-repo-check"];
 
-    if (editMode) {
+    if (permissionLevel === "yolo") {
       args.push("--full-auto");
+      args.push("-c", "sandbox_workspace_write.network_access=true");
+    } else if (permissionLevel === "edit") {
+      args.push("--sandbox", "workspace-write");
       args.push("-c", "sandbox_workspace_write.network_access=true");
     } else {
       args.push("--sandbox", "read-only");

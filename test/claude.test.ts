@@ -7,6 +7,7 @@ import {
   parseJsonLine,
   parseNdjsonChunk,
 } from "../src/claude";
+import { claudeDriver } from "../src/drivers/claude";
 
 describe("claude argument builder", () => {
   test("defaults to dontAsk permission mode", () => {
@@ -64,6 +65,28 @@ describe("claude argument builder", () => {
   test("uuid validator accepts v4 and rejects random text", () => {
     expect(isUuid("550e8400-e29b-41d4-a716-446655440000")).toBe(true);
     expect(isUuid("channel-id-123")).toBe(false);
+  });
+});
+
+describe("claude driver permission levels", () => {
+  test("off: uses dontAsk permission mode", () => {
+    const args = claudeDriver.buildArgs({ prompt: "hello", permissionLevel: "off" });
+    expect(args).toContain("--permission-mode");
+    expect(args).toContain("dontAsk");
+    expect(args).not.toContain("--dangerously-skip-permissions");
+  });
+
+  test("edit: uses acceptEdits permission mode", () => {
+    const args = claudeDriver.buildArgs({ prompt: "hello", permissionLevel: "edit" });
+    expect(args).toContain("--permission-mode");
+    expect(args).toContain("acceptEdits");
+    expect(args).not.toContain("--dangerously-skip-permissions");
+  });
+
+  test("yolo: uses dangerously-skip-permissions", () => {
+    const args = claudeDriver.buildArgs({ prompt: "hello", permissionLevel: "yolo" });
+    expect(args).toContain("--dangerously-skip-permissions");
+    expect(args).not.toContain("--permission-mode");
   });
 });
 

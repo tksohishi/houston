@@ -1,8 +1,54 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { applyEmptyMentionHelpRule, buildEmptyMentionHelp, classifiedToCommand, isSubPath, isValidProjectName, parseCommand, sanitizeChannelName, sanitizeDiscordReply, scaffoldProject, splitDiscordMessage, stripBotMention, updatePersona } from "../src/index";
+import {
+  applyEmptyMentionHelpRule,
+  buildEmptyMentionHelp,
+  classifiedToCommand,
+  isMisleadingLinkLabel,
+  isSubPath,
+  isValidProjectName,
+  parseCommand,
+  parsePersonaRequest,
+  resetPersonaProfiles,
+  sanitizeChannelName,
+  sanitizeDiscordReply,
+  scaffoldProject,
+  splitDiscordMessage,
+  stripBotMention,
+  updatePersona,
+} from "../src/index";
+
+describe("yolo prefix parsing", () => {
+  const YOLO_REGEX = /^\/yolo\s+(.+)$/s;
+
+  test("matches /yolo with a prompt", () => {
+    const match = "/yolo list files".match(YOLO_REGEX);
+    expect(match).not.toBeNull();
+    expect(match![1]).toBe("list files");
+  });
+
+  test("matches /yolo with multiline prompt", () => {
+    const match = "/yolo line one\nline two".match(YOLO_REGEX);
+    expect(match).not.toBeNull();
+    expect(match![1]).toBe("line one\nline two");
+  });
+
+  test("does not match bare /yolo without prompt", () => {
+    expect("/yolo".match(YOLO_REGEX)).toBeNull();
+    expect("/yolo ".match(YOLO_REGEX)).toBeNull();
+  });
+
+  test("does not match /yolo embedded in text", () => {
+    expect("please /yolo something".match(YOLO_REGEX)).toBeNull();
+  });
+
+  test("captures prompt after first whitespace char", () => {
+    const match = "/yolo   run npm test".match(YOLO_REGEX);
+    expect(match![1]).toBe("run npm test");
+  });
+});
 
 describe("isSubPath", () => {
   test("accepts direct children and rejects parents", () => {
@@ -108,6 +154,11 @@ describe("parseCommand", () => {
     expect(parseCommand("hello")).toBeNull();
     expect(parseCommand("/unknown")).toBeNull();
   });
+
+  test("does not match /yolo (handled separately before parseCommand)", () => {
+    expect(parseCommand("/yolo list files")).toBeNull();
+    expect(parseCommand("/yolo")).toBeNull();
+  });
 });
 
 describe("discord message splitting", () => {
@@ -159,12 +210,28 @@ describe("discord reply sanitizing", () => {
     expect(output).toBe("index.ts (`my-app/src/index.ts:9`)");
   });
 
-  test("converts external markdown links to explicit URL text", () => {
+  test("preserves markdown links with HTTP URLs", () => {
     const output = sanitizeDiscordReply(
       "[Docs](https://example.com/path)",
       "/Users/alex/work/projects",
     );
-    expect(output).toBe("Docs: https://example.com/path");
+    expect(output).toBe("[Docs](https://example.com/path)");
+  });
+
+  test("unwraps markdown link when label looks like a different domain", () => {
+    const output = sanitizeDiscordReply(
+      "[google.com](https://evil.example.com/phish)",
+      "/Users/alex/work/projects",
+    );
+    expect(output).toBe("google.com: https://evil.example.com/phish");
+  });
+
+  test("preserves markdown link when label domain matches target", () => {
+    const output = sanitizeDiscordReply(
+      "[example.com](https://example.com/page)",
+      "/Users/alex/work/projects",
+    );
+    expect(output).toBe("[example.com](https://example.com/page)");
   });
 
   test("does not rewrite slash commands", () => {
@@ -173,6 +240,32 @@ describe("discord reply sanitizing", () => {
       "/Users/alex/work/projects",
     );
     expect(output).toBe("Run /setup my-project to bind this channel.");
+  });
+});
+
+describe("isMisleadingLinkLabel", () => {
+  test("plain text label is not misleading", () => {
+    expect(isMisleadingLinkLabel("Afuri Ramen", "https://maps.google.com/place")).toBe(false);
+  });
+
+  test("label with matching domain is not misleading", () => {
+    expect(isMisleadingLinkLabel("example.com", "https://example.com/page")).toBe(false);
+  });
+
+  test("label subdomain of target is not misleading", () => {
+    expect(isMisleadingLinkLabel("google.com", "https://maps.google.com/place")).toBe(false);
+  });
+
+  test("label with different domain is misleading", () => {
+    expect(isMisleadingLinkLabel("google.com", "https://evil.com/phish")).toBe(true);
+  });
+
+  test("label with full URL pointing to different domain is misleading", () => {
+    expect(isMisleadingLinkLabel("https://google.com", "https://evil.com")).toBe(true);
+  });
+
+  test("single word without TLD is not misleading", () => {
+    expect(isMisleadingLinkLabel("Docs", "https://evil.com")).toBe(false);
   });
 });
 
@@ -261,15 +354,36 @@ describe("empty mention help message", () => {
 });
 
 describe("scaffoldProject", () => {
-  test("creates AGENTS.md with symlinks for CLAUDE.md and GEMINI.md", () => {
+  test("creates default workspace markdown files with symlinks for CLAUDE.md and GEMINI.md", () => {
     const dir = path.join(mkdtempSync(path.join(tmpdir(), "houston-scaffold-")), "my-app");
     scaffoldProject(dir, "my-app", "my-channel");
 
     expect(existsSync(path.join(dir, "AGENTS.md"))).toBe(true);
+    expect(existsSync(path.join(dir, "PERSONA.LANG.md"))).toBe(true);
+    expect(existsSync(path.join(dir, "CONTEXT.md"))).toBe(true);
+    expect(existsSync(path.join(dir, "SKILLS.md"))).toBe(true);
     expect(lstatSync(path.join(dir, "CLAUDE.md")).isSymbolicLink()).toBe(true);
     expect(lstatSync(path.join(dir, "GEMINI.md")).isSymbolicLink()).toBe(true);
     expect(readlinkSync(path.join(dir, "CLAUDE.md"))).toBe("AGENTS.md");
     expect(readlinkSync(path.join(dir, "GEMINI.md"))).toBe("AGENTS.md");
+  });
+
+  test("copies markdown defaults from app-level defaults directory when provided", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "houston-scaffold-"));
+    const dir = path.join(root, "my-app");
+    const defaultsDir = path.join(root, "workspace-defaults");
+    mkdirSync(defaultsDir, { recursive: true });
+    writeFileSync(path.join(defaultsDir, "AGENTS.md"), "# custom agents\n");
+    writeFileSync(path.join(defaultsDir, "PERSONA.LANG.md"), "# custom persona\n");
+    writeFileSync(path.join(defaultsDir, "CONTEXT.md"), "# custom context\n");
+    writeFileSync(path.join(defaultsDir, "SKILLS.md"), "# custom skills\n");
+
+    scaffoldProject(dir, "my-app", "my-channel", defaultsDir);
+
+    expect(readFileSync(path.join(dir, "AGENTS.md"), "utf8")).toBe("# custom agents\n");
+    expect(readFileSync(path.join(dir, "PERSONA.LANG.md"), "utf8")).toBe("# custom persona\n");
+    expect(readFileSync(path.join(dir, "CONTEXT.md"), "utf8")).toBe("# custom context\n");
+    expect(readFileSync(path.join(dir, "SKILLS.md"), "utf8")).toBe("# custom skills\n");
   });
 
   test("does not overwrite existing files", () => {
@@ -285,53 +399,78 @@ describe("scaffoldProject", () => {
 });
 
 describe("updatePersona", () => {
-  test("appends persona section to existing AGENTS.md", () => {
+  test("creates persona profiles file with EN section when missing", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "houston-persona-"));
-    const agentsPath = path.join(dir, "AGENTS.md");
-    writeFileSync(agentsPath, "# my-project\n\nSome description.\n");
+    const personaPath = path.join(dir, "PERSONA.LANG.md");
 
-    updatePersona(agentsPath, "a sarcastic pirate");
+    updatePersona(personaPath, "a sarcastic pirate");
 
-    const content = readFileSync(agentsPath, "utf8");
-    expect(content).toContain("## Persona");
+    const content = readFileSync(personaPath, "utf8");
+    expect(content).toContain("# Persona Profiles");
+    expect(content).toContain("## EN");
     expect(content).toContain("a sarcastic pirate");
-    expect(content).toContain("# my-project");
   });
 
-  test("replaces existing persona section", () => {
+  test("replaces existing section for the same language", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "houston-persona-"));
-    const agentsPath = path.join(dir, "AGENTS.md");
-    writeFileSync(agentsPath, "# my-project\n\n## Persona\n\nold persona\n");
+    const personaPath = path.join(dir, "PERSONA.LANG.md");
+    writeFileSync(personaPath, "# Persona Profiles\n\n## EN\n\nold persona\n");
 
-    updatePersona(agentsPath, "a patient mentor");
+    updatePersona(personaPath, "a patient mentor", "en");
 
-    const content = readFileSync(agentsPath, "utf8");
+    const content = readFileSync(personaPath, "utf8");
     expect(content).toContain("a patient mentor");
     expect(content).not.toContain("old persona");
   });
 
-  test("clears persona section", () => {
+  test("appends a new section for a different language", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "houston-persona-"));
-    const agentsPath = path.join(dir, "AGENTS.md");
-    writeFileSync(agentsPath, "# my-project\n\n## Persona\n\nold persona\n");
+    const personaPath = path.join(dir, "PERSONA.LANG.md");
+    writeFileSync(personaPath, "# Persona Profiles\n\n## EN\n\nold persona\n");
 
-    updatePersona(agentsPath, "");
+    updatePersona(personaPath, "concise japanese", "ja");
 
-    const content = readFileSync(agentsPath, "utf8");
-    expect(content).not.toContain("## Persona");
-    expect(content).not.toContain("old persona");
-    expect(content).toContain("# my-project");
+    const content = readFileSync(personaPath, "utf8");
+    expect(content).toContain("## EN");
+    expect(content).toContain("old persona");
+    expect(content).toContain("## JA");
+    expect(content).toContain("concise japanese");
   });
 
-  test("creates file if missing", () => {
+  test("resetPersonaProfiles restores defaults", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "houston-persona-"));
-    const agentsPath = path.join(dir, "AGENTS.md");
+    const personaPath = path.join(dir, "PERSONA.LANG.md");
+    writeFileSync(personaPath, "# Persona Profiles\n\n## EN\n\nold persona\n");
 
-    updatePersona(agentsPath, "a friendly bot");
+    resetPersonaProfiles(personaPath);
 
-    const content = readFileSync(agentsPath, "utf8");
-    expect(content).toContain("## Persona");
-    expect(content).toContain("a friendly bot");
+    const content = readFileSync(personaPath, "utf8");
+    expect(content).toContain("# Persona Profiles");
+    expect(content).toContain("## EN");
+    expect(content).not.toContain("old persona");
+  });
+});
+
+describe("parsePersonaRequest", () => {
+  test("defaults to EN when no language prefix is provided", () => {
+    expect(parsePersonaRequest("a friendly mentor")).toEqual({
+      language: "EN",
+      description: "a friendly mentor",
+    });
+  });
+
+  test("parses language prefix from persona command", () => {
+    expect(parsePersonaRequest("ja: 丁寧で簡潔")).toEqual({
+      language: "JA",
+      description: "丁寧で簡潔",
+    });
+  });
+
+  test("auto detects JA for Japanese descriptions without prefix", () => {
+    expect(parsePersonaRequest("丁寧で簡潔に話すアシスタント")).toEqual({
+      language: "JA",
+      description: "丁寧で簡潔に話すアシスタント",
+    });
   });
 });
 

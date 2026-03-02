@@ -1,11 +1,30 @@
 import { existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
-import { HarnessProcessError, HarnessTimeoutError, runHarness, type StreamJsonEvent } from "./harness";
+import { HarnessProcessError, HarnessTimeoutError, runHarness, type PermissionLevel, type StreamJsonEvent } from "./harness";
 import { loadConfig, missingConfigErrorMessage } from "./config";
+import {
+  DEFAULT_CONSTITUTION,
+  defaultConstitutionPath,
+  loadConstitutionFromPath,
+  serializeConstitution,
+  type HoustonConstitution,
+} from "./constitution";
+import { buildHarnessPromptWithContext, loadPromptContext } from "./context-loader";
 import { classifyIntent, type ClassifiedCommand } from "./classify";
 import { checkAvailableDrivers, getDriver, isHarnessName } from "./drivers";
 import { ChannelQueue } from "./queue";
 import { ensureConfigFilePermissions, loadSessions, saveSessions, setEditMode, setHarness, setLastResponse, setProjectDir, setSession } from "./sessions";
+import {
+  AGENTS_FILE_NAME,
+  CONTEXT_FILE_NAME,
+  DEFAULT_PERSONA_LANG_MD,
+  PERSONA_LANG_FILE_NAME,
+  SKILLS_FILE_NAME,
+  WORKSPACE_DEFAULT_TEMPLATES,
+  type WorkspaceDefaultFileName,
+  workspaceDefaultsDir,
+} from "./workspace-defaults";
 
 const DISCORD_CHAR_LIMIT = 2000;
 const RESUME_PROMPT =
@@ -109,7 +128,7 @@ export function buildEmptyMentionHelp(
 
   return [
     `Hi, I am ${botName}.`,
-    "Commands: `/status`, `/resume`, `/harness claude|codex|gemini`, `/edit on|off`, `/persona <description>`, `/icon`, `/icon clear`.",
+    "Commands: `/status`, `/resume`, `/harness claude|codex|gemini`, `/edit on|off`, `/persona [lang:] <description>`, `/icon`, `/icon clear`.",
   ].join("\n");
 }
 
@@ -163,14 +182,39 @@ export function sanitizeChannelName(name: string): string | null {
   return slug;
 }
 
-export function scaffoldProject(projectDir: string, projectName: string, channelName?: string): void {
+function copyDefaultWorkspaceFileIfMissing(
+  projectDir: string,
+  fileName: WorkspaceDefaultFileName,
+  defaultsDir?: string,
+): void {
+  const filePath = path.join(projectDir, fileName);
+  if (existsSync(filePath)) {
+    return;
+  }
+
+  if (defaultsDir) {
+    const sourcePath = path.join(defaultsDir, fileName);
+    if (existsSync(sourcePath)) {
+      writeFileSync(filePath, readFileSync(sourcePath, "utf8"), "utf8");
+      return;
+    }
+  }
+
+  writeFileSync(filePath, WORKSPACE_DEFAULT_TEMPLATES[fileName], "utf8");
+}
+
+export function scaffoldProject(
+  projectDir: string,
+  _projectName: string,
+  _channelName?: string,
+  defaultsDir?: string,
+): void {
   mkdirSync(projectDir, { recursive: true });
 
-  const agentsPath = path.join(projectDir, "AGENTS.md");
-  if (!existsSync(agentsPath)) {
-    const label = channelName ? ` from Discord channel #${channelName}` : "";
-    writeFileSync(agentsPath, `# ${projectName}\n\nProject created by Houston${label}.\n`);
-  }
+  copyDefaultWorkspaceFileIfMissing(projectDir, AGENTS_FILE_NAME, defaultsDir);
+  copyDefaultWorkspaceFileIfMissing(projectDir, PERSONA_LANG_FILE_NAME, defaultsDir);
+  copyDefaultWorkspaceFileIfMissing(projectDir, CONTEXT_FILE_NAME, defaultsDir);
+  copyDefaultWorkspaceFileIfMissing(projectDir, SKILLS_FILE_NAME, defaultsDir);
 
   for (const name of ["CLAUDE.md", "GEMINI.md"]) {
     const linkPath = path.join(projectDir, name);
@@ -180,38 +224,81 @@ export function scaffoldProject(projectDir: string, projectName: string, channel
   }
 }
 
-const PERSONA_SECTION_REGEX = /\n## Persona\n[\s\S]*?(?=\n## |\n*$)/;
+const PERSONA_DEFAULT_LANGUAGE = "EN";
+const PERSONA_LANG_INPUT_REGEX = /^([A-Za-z]{2,8}(?:-[A-Za-z0-9]{2,8})?)\s*:\s*(.+)$/;
+const JAPANESE_KANA_REGEX = /[\u3040-\u30ff\u31f0-\u31ff\uff66-\uff9f]/;
+const JAPANESE_PUNCTUATION_REGEX = /[。、・「」『』ー]/;
 
-export function buildPersonaPrompt(description: string): string {
+function normalizePersonaLanguage(value: string): string {
+  return value
+    .trim()
+    .split("-")
+    .filter((part) => part.length > 0)
+    .map((part) => part.toUpperCase())
+    .join("-");
+}
+
+function inferPersonaLanguage(value: string): string {
+  if (JAPANESE_KANA_REGEX.test(value) || JAPANESE_PUNCTUATION_REGEX.test(value)) {
+    return "JA";
+  }
+
+  return PERSONA_DEFAULT_LANGUAGE;
+}
+
+export function parsePersonaRequest(description: string): { language: string; description: string } {
+  const trimmed = description.trim();
+  const matched = trimmed.match(PERSONA_LANG_INPUT_REGEX);
+  if (!matched) {
+    return { language: inferPersonaLanguage(trimmed), description: trimmed };
+  }
+
+  return {
+    language: normalizePersonaLanguage(matched[1]),
+    description: matched[2].trim(),
+  };
+}
+
+export function buildPersonaPrompt(description: string, language = PERSONA_DEFAULT_LANGUAGE): string {
+  const normalizedLanguage = normalizePersonaLanguage(language) || PERSONA_DEFAULT_LANGUAGE;
   return [
     "Write a persona instruction for an AI coding assistant's system prompt.",
+    `Target language: ${normalizedLanguage}`,
     `The persona: "${description}"`,
     "",
     "Requirements:",
     "- 2-4 sentences defining personality, tone, and communication style",
     "- Be specific about mannerisms, vocabulary, and voice",
     "- The persona should be fun but must never compromise helpfulness or accuracy",
+    `- Write the output in ${normalizedLanguage}`,
     "- Output ONLY the persona text, no headers, no markdown formatting, no preamble",
   ].join("\n");
 }
 
-export function updatePersona(agentsPath: string, description: string): void {
-  const content = existsSync(agentsPath) ? readFileSync(agentsPath, "utf8") : "";
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
-  if (!description) {
-    // Clear persona
-    const cleared = content.replace(PERSONA_SECTION_REGEX, "");
-    writeFileSync(agentsPath, cleared.trimEnd() + "\n");
+function personaSectionRegex(language: string): RegExp {
+  return new RegExp(`\\n## ${escapeRegex(language)}\\n[\\s\\S]*?(?=\\n## |\\n*$)`);
+}
+
+export function resetPersonaProfiles(personaPath: string): void {
+  writeFileSync(personaPath, `${DEFAULT_PERSONA_LANG_MD}\n`, "utf8");
+}
+
+export function updatePersona(personaPath: string, description: string, language = PERSONA_DEFAULT_LANGUAGE): void {
+  const normalizedLanguage = normalizePersonaLanguage(language) || PERSONA_DEFAULT_LANGUAGE;
+  const content = existsSync(personaPath) ? readFileSync(personaPath, "utf8") : `${DEFAULT_PERSONA_LANG_MD}\n`;
+  const section = `\n## ${normalizedLanguage}\n\n${description}\n`;
+  const sectionPattern = personaSectionRegex(normalizedLanguage);
+
+  if (sectionPattern.test(content)) {
+    writeFileSync(personaPath, content.replace(sectionPattern, section).trimEnd() + "\n");
     return;
   }
 
-  const section = `\n## Persona\n\n${description}\n`;
-
-  if (PERSONA_SECTION_REGEX.test(content)) {
-    writeFileSync(agentsPath, content.replace(PERSONA_SECTION_REGEX, section).trimEnd() + "\n");
-  } else {
-    writeFileSync(agentsPath, content.trimEnd() + "\n" + section);
-  }
+  writeFileSync(personaPath, content.trimEnd() + section, "utf8");
 }
 
 export function splitDiscordMessage(input: string, maxLength = DISCORD_CHAR_LIMIT): string[] {
@@ -273,10 +360,39 @@ function toSafeLocation(inputPath: string, baseDir: string): string {
   return `<external-path>${locationSuffix}`;
 }
 
+const DOMAIN_LIKE_REGEX = /^(?:https?:\/\/)?([a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z]{2,})+)/i;
+
+function extractDomain(url: string): string | null {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Returns true when the link label looks like a domain/URL that doesn't match
+ * the actual target, e.g. [google.com](https://evil.com). This is the classic
+ * masked-link phishing vector. Plain text labels like [Afuri Ramen](...) are fine.
+ */
+export function isMisleadingLinkLabel(label: string, target: string): boolean {
+  const labelMatch = label.trim().match(DOMAIN_LIKE_REGEX);
+  if (!labelMatch) return false;
+
+  const labelDomain = labelMatch[1].toLowerCase();
+  const targetDomain = extractDomain(target);
+  if (!targetDomain) return false;
+
+  return labelDomain !== targetDomain && !targetDomain.endsWith("." + labelDomain);
+}
+
 export function sanitizeDiscordReply(input: string, baseDir: string): string {
-  const withoutMaskedLocalLinks = input.replace(MARKDOWN_LINK_REGEX, (_match, label: string, target: string) => {
+  const withoutMaskedLocalLinks = input.replace(MARKDOWN_LINK_REGEX, (match, label: string, target: string) => {
     if (/^https?:\/\//i.test(target)) {
-      return `${label}: ${target}`;
+      if (isMisleadingLinkLabel(label, target)) {
+        return `${label}: ${target}`;
+      }
+      return match;
     }
 
     if (path.isAbsolute(target)) {
@@ -347,6 +463,15 @@ function formatCommandError(error: unknown): string {
   return "Unknown error.";
 }
 
+function formatContextLoadError(error: unknown): string {
+  const reason = error instanceof Error ? error.message : String(error);
+  if (/slot "agents"|\/AGENTS\.md/.test(reason)) {
+    return "Required project instructions file is missing: AGENTS.md. Restore it or run `/setup <project-name>` again.";
+  }
+
+  return "Failed to load prompt context: " + reason;
+}
+
 export async function start(): Promise<void> {
   let loaded;
   try {
@@ -362,7 +487,31 @@ export async function start(): Promise<void> {
 
   const { config, paths } = loaded;
   ensureConfigFilePermissions(paths.configPath);
+
+  const configuredConstitutionPath = config.constitutionPath;
+  const fallbackConstitutionPath = defaultConstitutionPath(paths.configPath);
+  const constitutionPath = configuredConstitutionPath ?? fallbackConstitutionPath;
+  let constitution: HoustonConstitution = DEFAULT_CONSTITUTION;
+  let constitutionSource: "config" | "default" | "builtin" = "builtin";
+
+  if (configuredConstitutionPath) {
+    constitution = loadConstitutionFromPath(configuredConstitutionPath);
+    constitutionSource = "config";
+  } else if (existsSync(fallbackConstitutionPath)) {
+    constitution = loadConstitutionFromPath(fallbackConstitutionPath);
+    constitutionSource = "default";
+  } else {
+    console.warn("[houston] Constitution file not found, using built in defaults: " + fallbackConstitutionPath);
+  }
+
+  const constitutionHash = createHash("sha256")
+    .update(serializeConstitution(constitution))
+    .digest("hex")
+    .slice(0, 12);
+
   let geminiEditOffPolicyPath = config.geminiEditOffPolicy;
+  const markdownDefaultsDir = workspaceDefaultsDir(paths.configPath);
+  const hasMarkdownDefaults = existsSync(markdownDefaultsDir);
   if (geminiEditOffPolicyPath && !existsSync(geminiEditOffPolicyPath)) {
     console.warn(`[houston] Gemini edit-off policy not found, continuing without it: ${geminiEditOffPolicyPath}`);
     geminiEditOffPolicyPath = undefined;
@@ -372,6 +521,7 @@ export async function start(): Promise<void> {
   const queue = new ChannelQueue();
   const availableDrivers = await checkAvailableDrivers();
   const emptyMentionHelpShown = new Set<string>();
+  const lastContextFilesByChannel = new Map<string, number>();
 
   const discord = await import("discord.js");
   const client = new discord.Client({
@@ -396,7 +546,16 @@ export async function start(): Promise<void> {
     console.log(`Sessions path: ${paths.sessionsPath}`);
     console.log(`Default harness: ${config.defaultHarness}`);
     console.log(`Available harnesses: ${[...availableDrivers].join(", ") || "none"}`);
-    console.log(`Base directory: ${config.baseDir}`);
+    console.log("Base directory: " + config.baseDir);
+    console.log(
+      "Constitution: " + constitutionPath
+      + " (" + constitutionSource
+      + ", slots: " + constitution.slots.length
+      + ", sha256:" + constitutionHash + ")",
+    );
+    if (hasMarkdownDefaults) {
+      console.log(`Workspace markdown defaults: ${markdownDefaultsDir}`);
+    }
     if (geminiEditOffPolicyPath) {
       console.log(`Gemini edit-off policy: ${geminiEditOffPolicyPath}`);
     }
@@ -466,10 +625,17 @@ export async function start(): Promise<void> {
       return;
     }
 
-    let command = parseCommand(prompt);
+    let yoloOverride = false;
+    const yoloMatch = prompt.match(/^\/yolo\s+(.+)$/s);
+    if (yoloMatch) {
+      yoloOverride = true;
+      prompt = yoloMatch[1];
+    }
+
+    let command = yoloOverride ? null : parseCommand(prompt);
 
     // For short unmatched messages, try LLM intent classification
-    if (!command && prompt.length <= 100 && availableDrivers.has("claude")) {
+    if (!command && !yoloOverride && prompt.length <= 100 && availableDrivers.has("claude")) {
       try {
         const classified = await classifyIntent(prompt);
         if (classified.command !== "none") {
@@ -496,7 +662,7 @@ export async function start(): Promise<void> {
       }
 
       if (!existsSync(projectDir)) {
-        scaffoldProject(projectDir, projectName, channelName);
+        scaffoldProject(projectDir, projectName, channelName, hasMarkdownDefaults ? markdownDefaultsDir : undefined);
         console.log(`Created project directory: ${projectDir}`);
       } else if (!statSync(projectDir).isDirectory()) {
         await reply(message, `Project path exists but is not a directory: \`${projectDir}\``);
@@ -617,7 +783,12 @@ export async function start(): Promise<void> {
         }
 
         if (!existsSync(synthProjectDir)) {
-          scaffoldProject(synthProjectDir, syntheticCommand.projectName, channelName);
+          scaffoldProject(
+            synthProjectDir,
+            syntheticCommand.projectName,
+            channelName,
+            hasMarkdownDefaults ? markdownDefaultsDir : undefined,
+          );
           console.log(`Created project directory: ${synthProjectDir}`);
         } else if (!statSync(synthProjectDir).isDirectory()) {
           await reply(message, `Project path exists but is not a directory: \`${synthProjectDir}\``);
@@ -644,10 +815,16 @@ export async function start(): Promise<void> {
 
     // /persona command
     if (command?.type === "persona") {
-      const agentsPath = path.join(projectDir, "AGENTS.md");
+      const personaPath = path.join(projectDir, PERSONA_LANG_FILE_NAME);
       if (!command.description) {
-        updatePersona(agentsPath, "");
-        await reply(message, "Persona cleared.");
+        resetPersonaProfiles(personaPath);
+        await reply(message, "Persona profiles cleared.");
+        return;
+      }
+
+      const personaRequest = parsePersonaRequest(command.description);
+      if (!personaRequest.description) {
+        await reply(message, "Persona description is empty.");
         return;
       }
 
@@ -657,10 +834,10 @@ export async function start(): Promise<void> {
 
       try {
         const result = await runHarness({
-          prompt: buildPersonaPrompt(command.description),
+          prompt: buildPersonaPrompt(personaRequest.description, personaRequest.language),
           projectDir,
           driver,
-          editMode: false,
+          permissionLevel: "off",
           policyPath: geminiEditOffPolicyPath,
           timeoutMs: 2 * 60 * 1000,
         });
@@ -672,8 +849,8 @@ export async function start(): Promise<void> {
           return;
         }
 
-        updatePersona(agentsPath, generated);
-        await reply(message, `Persona set:\n\n${generated}`);
+        updatePersona(personaPath, generated, personaRequest.language);
+        await reply(message, `Persona set for ${personaRequest.language}:\n\n${generated}`);
       } catch (error) {
         stopTyping();
         log(`Persona generation error: ${error instanceof Error ? error.message : error}`);
@@ -699,10 +876,17 @@ export async function start(): Promise<void> {
       const editLabel = entry?.editMode ? "on" : "off";
       const sessionLabel = entry?.sessionId || "none";
       const installedLabel = availableDrivers.has(harnessName) ? "yes" : "no";
-      await reply(
-        message,
-        `**Harness:** ${harnessName} (installed: ${installedLabel})\n**Edit mode:** ${editLabel}\n**Session:** ${sessionLabel}\n**Project:** ${projectDir}`,
-      );
+      const contextFiles = lastContextFilesByChannel.get(message.channelId);
+      const contextLabel = typeof contextFiles === "number" ? String(contextFiles) : "none";
+      const statusLines = [
+        "**Harness:** " + harnessName + " (installed: " + installedLabel + ")",
+        "**Edit mode:** " + editLabel,
+        "**Session:** " + sessionLabel,
+        "**Project:** " + projectDir,
+        "**Constitution:** " + constitutionSource + " (slots: " + constitution.slots.length + ", sha256:" + constitutionHash + ")",
+        "**Last context files:** " + contextLabel,
+      ];
+      await reply(message, statusLines.join("\n"));
       return;
     }
 
@@ -754,16 +938,41 @@ export async function start(): Promise<void> {
       const driver = getDriver(harnessName);
       const previousSessionId = currentEntry?.sessionId || undefined;
       const editMode = currentEntry?.editMode === true;
+      const permissionLevel: PermissionLevel = yoloOverride ? "yolo" : editMode ? "edit" : "off";
+      const userId = typeof message.author?.id === "string" ? message.author.id : message.channelId;
+      let harnessPrompt = prompt;
+
+      try {
+        const loadedContext = loadPromptContext({
+          constitution,
+          configPath: paths.configPath,
+          projectDir,
+          userId,
+        });
+        harnessPrompt = buildHarnessPromptWithContext(prompt, loadedContext.files);
+        lastContextFilesByChannel.set(message.channelId, loadedContext.files.length);
+        log(
+          "Context files: "
+          + loadedContext.files.length
+          + ", bytes: "
+          + loadedContext.totalBytes,
+        );
+      } catch (error) {
+        lastContextFilesByChannel.delete(message.channelId);
+        log(`Context load error: ${error instanceof Error ? error.message : error}`);
+        await reply(message, formatContextLoadError(error));
+        return;
+      }
 
       log(`Session: ${previousSessionId ?? "new"}`);
       log(`Harness: ${harnessName}`);
       const stopTyping = startTypingLoop(message.channel);
 
       const runOpts = {
-        prompt,
+        prompt: harnessPrompt,
         projectDir,
         driver,
-        editMode,
+        permissionLevel,
         policyPath: geminiEditOffPolicyPath,
         timeoutMs: 10 * 60 * 1000,
         onSpawn: (pid: number) => log(`${driver.name} process started (pid ${pid})`),
@@ -784,7 +993,7 @@ export async function start(): Promise<void> {
           if (previousSessionId && error instanceof HarnessProcessError && error.details.some((l) => l.includes("already in use"))) {
             log("Session in use, retrying without session ID...");
             setEditMode(sessions, message.channelId, false);
-            result = await runHarness({ ...runOpts, editMode: false });
+            result = await runHarness({ ...runOpts, permissionLevel: "off" });
           } else {
             throw error;
           }
@@ -795,7 +1004,8 @@ export async function start(): Promise<void> {
         log(`Output:\n${result.output}`);
 
         const harnessDisplayName = harnessName.charAt(0).toUpperCase() + harnessName.slice(1);
-        const modeHeader = `🤖 ${harnessDisplayName} | ✍️ Edit ${editMode ? "on" : "off"}`;
+        const modeLabel = permissionLevel === "yolo" ? "Yolo" : permissionLevel === "edit" ? "Edit on" : "Edit off";
+        const modeHeader = `🤖 ${harnessDisplayName} | ✍️ ${modeLabel}`;
         const body = result.output.trim().length > 0 ? result.output.trim() : "No assistant text returned.";
         let output = `${modeHeader}\n${body}`;
 
@@ -804,7 +1014,9 @@ export async function start(): Promise<void> {
           (d) => d.includes("Edit") || d.includes("Write"),
         ) || (!editMode && /write_file|run_shell_command|write.*blocked|edit.*blocked|permission.*(?:write|edit)|read.only|sandbox|cannot.*(?:modify|write|edit|create)/i.test(result.output));
         if (hasEditDenial) {
-          output += "\n\nTip: use `/edit on` to allow file modifications.";
+          output += editMode
+            ? "\n\nTip: use `/yolo <prompt>` to allow shell commands for a single request."
+            : "\n\nTip: use `/edit on` to allow file modifications.";
         }
 
         setLastResponse(sessions, message.channelId, prompt, output);

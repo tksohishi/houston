@@ -8,11 +8,13 @@ export const geminiDriver: HarnessDriver = {
   binary: "gemini",
   textSeparator: "",
 
-  buildArgs({ prompt, sessionId, editMode, policyPath }) {
+  buildArgs({ prompt, sessionId, permissionLevel, policyPath }) {
     const args = ["-p", prompt, "-o", "stream-json"];
 
-    if (editMode) {
+    if (permissionLevel === "yolo") {
       args.push("--approval-mode", "yolo");
+    } else if (permissionLevel === "edit") {
+      args.push("--approval-mode", "auto_edit");
     } else if (policyPath) {
       args.push("--approval-mode", "yolo", "--policy", policyPath);
     }
