@@ -5,6 +5,13 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { REST, Routes } from "discord.js";
 import { defaultConfigPath, defaultSessionsPath, defaults, expandHomePath } from "../src/config";
+import {
+  CONSTITUTION_FILE_NAME,
+  DEFAULT_CONSTITUTION,
+  DEFAULT_USER_CONTEXT_FILE_NAME,
+  serializeConstitution,
+  userMarkdownsRootDir,
+} from "../src/constitution";
 import { parseSetupFlags } from "../src/setup-flags";
 import { resetConfigAndSessions } from "../src/setup-reset";
 import {
@@ -14,6 +21,11 @@ import {
   looksLikeDiscordToken,
   trustGeminiFolder,
 } from "../src/setup-utils";
+import {
+  WORKSPACE_DEFAULT_FILE_NAMES,
+  WORKSPACE_DEFAULT_TEMPLATES,
+  workspaceDefaultsDir,
+} from "../src/workspace-defaults";
 
 const SUPPORTED_HARNESSES = ["claude", "codex", "gemini"] as const;
 const GEMINI_POLICY_DIR_RELATIVE = path.join("policies", "gemini");
@@ -60,6 +72,21 @@ const GEMINI_MCP_GUARD_POLICY_TOML = [
   'decision = "deny"',
   "priority = 500",
   'deny_message = "MCP server is not trusted."',
+  "",
+].join("\n");
+
+const USER_MARKDOWNS_README_MD = [
+  "# User Markdown Overrides",
+  "",
+  "Add per-user markdown files here for personalized context.",
+  "",
+  "## Directory Pattern",
+  `users/<discord-user-id>/${DEFAULT_USER_CONTEXT_FILE_NAME}`,
+  "",
+  "## Example",
+  "- users/123456789012345678/CONTEXT.md",
+  "",
+  "These files load only when a constitution slot uses scope \"user\".",
   "",
 ].join("\n");
 
@@ -243,6 +270,8 @@ async function main(): Promise<void> {
 
     const configPathInput = await ask(`Config path [${defaultConfig}]: `);
     const configPath = path.resolve(expandHomePath(withDefault(configPathInput, defaultConfig)));
+    const configDir = path.dirname(configPath);
+    mkdirSync(configDir, { recursive: true });
 
     console.log("");
     console.log(`Default harness: ${SUPPORTED_HARNESSES.join(", ")}`);
@@ -302,7 +331,40 @@ async function main(): Promise<void> {
       }
     }
 
-    const policyDir = path.join(path.dirname(configPath), GEMINI_POLICY_DIR_RELATIVE);
+    const markdownDefaultsDir = workspaceDefaultsDir(configPath);
+    const setupWorkspaceMarkdownDefaults = normalizeYesNo(
+      await ask("Create app-level workspace markdown defaults? [Y/n]: "),
+      true,
+    );
+    if (setupWorkspaceMarkdownDefaults) {
+      mkdirSync(markdownDefaultsDir, { recursive: true });
+      console.log(`Workspace markdown defaults directory: ${markdownDefaultsDir}`);
+      for (const fileName of WORKSPACE_DEFAULT_FILE_NAMES) {
+        const filePath = path.join(markdownDefaultsDir, fileName);
+        const state = writeFileIfMissing(filePath, WORKSPACE_DEFAULT_TEMPLATES[fileName]);
+        console.log(`- ${fileName}: ${state}`);
+      }
+    }
+
+    let constitutionPath: string | undefined;
+    const setupConstitution = normalizeYesNo(
+      await ask("Create constitution and user markdown defaults? [Y/n]: "),
+      true,
+    );
+    if (setupConstitution) {
+      constitutionPath = path.join(configDir, CONSTITUTION_FILE_NAME);
+      const constitutionState = writeFileIfMissing(constitutionPath, `${serializeConstitution(DEFAULT_CONSTITUTION)}\n`);
+      const userMarkdownRoot = userMarkdownsRootDir(configPath);
+      mkdirSync(userMarkdownRoot, { recursive: true });
+      const readmePath = path.join(userMarkdownRoot, "README.md");
+      const readmeState = writeFileIfMissing(readmePath, USER_MARKDOWNS_README_MD);
+
+      console.log(`Constitution file: ${constitutionPath} (${constitutionState})`);
+      console.log(`User markdown root: ${userMarkdownRoot}`);
+      console.log(`- README.md: ${readmeState}`);
+    }
+
+    const policyDir = path.join(configDir, GEMINI_POLICY_DIR_RELATIVE);
     const setupGeminiPolicy = normalizeYesNo(
       await ask("Create Gemini edit-off policy files? [Y/n]: "),
       true,
@@ -335,13 +397,15 @@ async function main(): Promise<void> {
     if (geminiEditOffPolicy) {
       configObject.geminiEditOffPolicy = geminiEditOffPolicy;
     }
+    if (constitutionPath) {
+      configObject.constitutionPath = constitutionPath;
+    }
     const configBody = JSON.stringify(
       configObject,
       null,
       2,
     );
 
-    mkdirSync(path.dirname(configPath), { recursive: true });
     mkdirSync(path.dirname(sessionsPath), { recursive: true });
     writeFileSync(configPath, configBody, "utf8");
     chmodSync(configPath, 0o600);
@@ -349,6 +413,9 @@ async function main(): Promise<void> {
     console.log("");
     console.log(`Wrote config to ${configPath}`);
     console.log(`Sessions file will be stored at ${sessionsPath}`);
+    if (constitutionPath) {
+      console.log(`Constitution: ${constitutionPath}`);
+    }
     if (geminiEditOffPolicy) {
       console.log(`Gemini edit-off policy: ${geminiEditOffPolicy}`);
     }
