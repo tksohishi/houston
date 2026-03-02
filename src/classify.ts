@@ -6,7 +6,7 @@ export interface ClassifiedCommand {
 }
 
 const SYSTEM_PROMPT = `You classify Discord bot commands. Return JSON only.
-Commands: harness(claude|codex|gemini), edit(on|off), status, setup(project-name), persona(description or empty to clear)
+Commands: harness(claude|codex|gemini), edit(on|off), status, setup(project-name), persona([lang:] description or empty to clear)
 If not a command, return {"command":"none"}.
 
 Examples:

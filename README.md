@@ -24,6 +24,8 @@ Houston is a remote command center for AI coding agents, operated through Discor
    - invite URL generation
    - token and application ID prompts with validation
    - default harness selection (claude, codex, or gemini)
+   - optional app-level markdown defaults (`AGENTS.md`, `PERSONA.LANG.md`, `CONTEXT.md`, `SKILLS.md`)
+   - optional constitution file (`constitution.json`) and per-user markdown root (`users/<discord-user-id>/CONTEXT.md`)
    - optional Gemini trusted folder update for selected base directory
    - optional Gemini policy files for edit-off mode
 4. Setup writes config to `${XDG_CONFIG_HOME:-~/.config}/houston/config.json` by default.
@@ -38,7 +40,7 @@ Channels are explicitly bound to projects via the `/setup` command:
 @Houston /setup my-project
 ```
 
-This creates `<baseDir>/my-project` (if missing), scaffolds a `CLAUDE.md`, and binds the channel. Unbound channels receive a prompt to run `/setup`.
+This creates `<baseDir>/my-project` (if missing), scaffolds `AGENTS.md`, `PERSONA.LANG.md`, `CONTEXT.md`, `SKILLS.md`, links `CLAUDE.md` and `GEMINI.md` to `AGENTS.md`, then binds the channel. Unbound channels receive a prompt to run `/setup`.
 
 ## Commands
 
@@ -49,8 +51,8 @@ This creates `<baseDir>/my-project` (if missing), scaffolds a `CLAUDE.md`, and b
 | `/edit on\|off` | Toggle edit mode |
 | `/status` | Show harness, edit mode, session, project |
 | `/resume` | Return cached last output, or continue active session when available |
-| `/persona <description>` | Generate and set persona text in `AGENTS.md` |
-| `/persona clear` | Clear persona section from `AGENTS.md` |
+| `/persona [lang:] <description>` | Generate and set persona text in `PERSONA.LANG.md` (default language: `EN`) |
+| `/persona clear` | Reset persona profiles in `PERSONA.LANG.md` |
 | `/icon` | Set server-specific bot icon from one attached image (Manage Server required) |
 | `/icon clear` | Clear server-specific bot icon (Manage Server required) |
 
@@ -78,4 +80,5 @@ The test suite covers:
 - In unbound channels, a bare mention returns setup help once; repeated bare mentions are ignored until a non-empty prompt is sent.
 - The default harness is configurable (`defaultHarness` in config.json). Per-channel overrides are set via `/harness`.
 - Optional `geminiEditOffPolicy` in config enables Gemini `--approval-mode yolo` with `--policy` while edit mode is off.
+- Optional `constitutionPath` in config controls prompt context slots and limits (defaults to `<config-dir>/constitution.json` when present).
 - At startup, Houston checks which harness binaries are installed and logs availability. The `/harness` command only allows switching to installed harnesses.
