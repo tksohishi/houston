@@ -234,6 +234,14 @@ describe("discord reply sanitizing", () => {
     expect(output).toBe("https://example.com/page");
   });
 
+  test("converts h4 headings to bold text", () => {
+    const output = sanitizeDiscordReply(
+      "#### Summary\nSome content\n#### Details",
+      "/Users/alex/work/projects",
+    );
+    expect(output).toBe("**Summary**\nSome content\n**Details**");
+  });
+
   test("does not rewrite slash commands", () => {
     const output = sanitizeDiscordReply(
       "Run /setup my-project to bind this channel.",

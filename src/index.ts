@@ -394,7 +394,8 @@ export function isMisleadingLinkLabel(label: string, target: string): boolean {
 }
 
 export function sanitizeDiscordReply(input: string, baseDir: string): string {
-  const withoutMarkdownLinks = input.replace(MARKDOWN_LINK_REGEX, (match, label: string, target: string) => {
+  const withoutH4 = input.replace(/^####\s+(.+)$/gm, "**$1**");
+  const withoutMarkdownLinks = withoutH4.replace(MARKDOWN_LINK_REGEX, (match, label: string, target: string) => {
     if (/^https?:\/\//i.test(target)) {
       const trimmedLabel = label.trim();
       if (extractLabelDomain(trimmedLabel)) {
