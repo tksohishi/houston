@@ -210,7 +210,7 @@ describe("discord reply sanitizing", () => {
     expect(output).toBe("index.ts (`my-app/src/index.ts:9`)");
   });
 
-  test("preserves markdown links with HTTP URLs", () => {
+  test("preserves markdown links with HTTP URLs when the label is plain text", () => {
     const output = sanitizeDiscordReply(
       "[Docs](https://example.com/path)",
       "/Users/alex/work/projects",
@@ -223,15 +223,15 @@ describe("discord reply sanitizing", () => {
       "[google.com](https://evil.example.com/phish)",
       "/Users/alex/work/projects",
     );
-    expect(output).toBe("google.com: https://evil.example.com/phish");
+    expect(output).toBe("`google.com`: https://evil.example.com/phish");
   });
 
-  test("preserves markdown link when label domain matches target", () => {
+  test("collapses markdown link when label domain matches target", () => {
     const output = sanitizeDiscordReply(
       "[example.com](https://example.com/page)",
       "/Users/alex/work/projects",
     );
-    expect(output).toBe("[example.com](https://example.com/page)");
+    expect(output).toBe("https://example.com/page");
   });
 
   test("does not rewrite slash commands", () => {

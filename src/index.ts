@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { createConsola } from "consola";
 import { HarnessProcessError, HarnessTimeoutError, runHarness, type PermissionLevel, type StreamJsonEvent } from "./harness";
 import { loadConfig, missingConfigErrorMessage } from "./config";
 import {
@@ -31,6 +32,8 @@ const RESUME_PROMPT =
   "Continue the most recent interrupted response in this channel. Return only the final response text.";
 const MARKDOWN_LINK_REGEX = /\[([^\]\n]+)\]\(([^)\s]+)\)/g;
 const ABSOLUTE_PATH_REGEX = /(^|[\s(<`'"])((?:\/[^/\s`()[\]{}<>:]+){2,}(?::\d+(?::\d+)?)?)/g;
+const verboseLogging = process.argv.includes("--verbose") || process.env.HOUSTON_VERBOSE === "1";
+const logger = createConsola({ level: verboseLogging ? 4 : 3 }).withTag("houston");
 
 export type HoustonCommand =
   | { type: "edit"; enabled: boolean }
@@ -362,6 +365,11 @@ function toSafeLocation(inputPath: string, baseDir: string): string {
 
 const DOMAIN_LIKE_REGEX = /^(?:https?:\/\/)?([a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z]{2,})+)/i;
 
+function extractLabelDomain(label: string): string | null {
+  const labelMatch = label.trim().match(DOMAIN_LIKE_REGEX);
+  return labelMatch ? labelMatch[1].toLowerCase() : null;
+}
+
 function extractDomain(url: string): string | null {
   try {
     return new URL(url).hostname.toLowerCase();
@@ -376,10 +384,9 @@ function extractDomain(url: string): string | null {
  * masked-link phishing vector. Plain text labels like [Afuri Ramen](...) are fine.
  */
 export function isMisleadingLinkLabel(label: string, target: string): boolean {
-  const labelMatch = label.trim().match(DOMAIN_LIKE_REGEX);
-  if (!labelMatch) return false;
+  const labelDomain = extractLabelDomain(label);
+  if (!labelDomain) return false;
 
-  const labelDomain = labelMatch[1].toLowerCase();
   const targetDomain = extractDomain(target);
   if (!targetDomain) return false;
 
@@ -387,11 +394,16 @@ export function isMisleadingLinkLabel(label: string, target: string): boolean {
 }
 
 export function sanitizeDiscordReply(input: string, baseDir: string): string {
-  const withoutMaskedLocalLinks = input.replace(MARKDOWN_LINK_REGEX, (match, label: string, target: string) => {
+  const withoutMarkdownLinks = input.replace(MARKDOWN_LINK_REGEX, (match, label: string, target: string) => {
     if (/^https?:\/\//i.test(target)) {
-      if (isMisleadingLinkLabel(label, target)) {
-        return `${label}: ${target}`;
+      const trimmedLabel = label.trim();
+      if (extractLabelDomain(trimmedLabel)) {
+        if (isMisleadingLinkLabel(trimmedLabel, target)) {
+          return `\`${trimmedLabel}\`: ${target}`;
+        }
+        return target;
       }
+
       return match;
     }
 
@@ -402,7 +414,7 @@ export function sanitizeDiscordReply(input: string, baseDir: string): string {
     return `${label} (\`${target}\`)`;
   });
 
-  return withoutMaskedLocalLinks.replace(
+  return withoutMarkdownLinks.replace(
     ABSOLUTE_PATH_REGEX,
     (_match, prefix: string, absolutePath: string) => `${prefix}${toSafeLocation(absolutePath, baseDir)}`,
   );
@@ -501,7 +513,7 @@ export async function start(): Promise<void> {
     constitution = loadConstitutionFromPath(fallbackConstitutionPath);
     constitutionSource = "default";
   } else {
-    console.warn("[houston] Constitution file not found, using built in defaults: " + fallbackConstitutionPath);
+    logger.warn("Constitution file not found, using built in defaults:", fallbackConstitutionPath);
   }
 
   const constitutionHash = createHash("sha256")
@@ -513,7 +525,7 @@ export async function start(): Promise<void> {
   const markdownDefaultsDir = workspaceDefaultsDir(paths.configPath);
   const hasMarkdownDefaults = existsSync(markdownDefaultsDir);
   if (geminiEditOffPolicyPath && !existsSync(geminiEditOffPolicyPath)) {
-    console.warn(`[houston] Gemini edit-off policy not found, continuing without it: ${geminiEditOffPolicyPath}`);
+    logger.warn("Gemini edit-off policy not found, continuing without it:", geminiEditOffPolicyPath);
     geminiEditOffPolicyPath = undefined;
   }
 
@@ -528,10 +540,13 @@ export async function start(): Promise<void> {
     intents: [discord.GatewayIntentBits.Guilds, discord.GatewayIntentBits.GuildMessages, discord.GatewayIntentBits.MessageContent],
   });
 
-  const verbose = process.argv.includes("--verbose") || process.env.HOUSTON_VERBOSE === "1";
+  function debugLog(...args: unknown[]) {
+    if (args.length === 0) {
+      return;
+    }
 
-  function log(...args: unknown[]) {
-    if (verbose) console.log("[houston]", ...args);
+    const [first, ...rest] = args as [unknown, ...unknown[]];
+    logger.debug(first, ...rest);
   }
 
   async function reply(message: any, content: string): Promise<void> {
@@ -541,23 +556,23 @@ export async function start(): Promise<void> {
   let botRoleIds: string[] = [];
 
   client.on("clientReady", () => {
-    console.log(`Houston online as ${client.user?.tag ?? "unknown user"}`);
-    console.log(`Config path: ${paths.configPath}`);
-    console.log(`Sessions path: ${paths.sessionsPath}`);
-    console.log(`Default harness: ${config.defaultHarness}`);
-    console.log(`Available harnesses: ${[...availableDrivers].join(", ") || "none"}`);
-    console.log("Base directory: " + config.baseDir);
-    console.log(
+    logger.success(`Houston online as ${client.user?.tag ?? "unknown user"}`);
+    logger.info(`Config path: ${paths.configPath}`);
+    logger.info(`Sessions path: ${paths.sessionsPath}`);
+    logger.info(`Default harness: ${config.defaultHarness}`);
+    logger.info(`Available harnesses: ${[...availableDrivers].join(", ") || "none"}`);
+    logger.info("Base directory: " + config.baseDir);
+    logger.info(
       "Constitution: " + constitutionPath
       + " (" + constitutionSource
       + ", slots: " + constitution.slots.length
       + ", sha256:" + constitutionHash + ")",
     );
     if (hasMarkdownDefaults) {
-      console.log(`Workspace markdown defaults: ${markdownDefaultsDir}`);
+      logger.info(`Workspace markdown defaults: ${markdownDefaultsDir}`);
     }
     if (geminiEditOffPolicyPath) {
-      console.log(`Gemini edit-off policy: ${geminiEditOffPolicyPath}`);
+      logger.info(`Gemini edit-off policy: ${geminiEditOffPolicyPath}`);
     }
 
     // Collect managed role IDs so @Role mentions also trigger the bot
@@ -569,10 +584,10 @@ export async function start(): Promise<void> {
         if (managed) roleIds.push(managed.id);
       }
       botRoleIds = roleIds;
-      if (roleIds.length > 0) log(`Bot role IDs: ${roleIds.join(", ")}`);
+      if (roleIds.length > 0) debugLog(`Bot role IDs: ${roleIds.join(", ")}`);
     }
 
-    if (verbose) console.log("Verbose logging enabled");
+    debugLog("Verbose logging enabled");
   });
 
   client.on("messageCreate", async (message: any) => {
@@ -589,7 +604,7 @@ export async function start(): Promise<void> {
     }
 
     const channelName = message.channel?.name;
-    log(`Message in #${channelName ?? "unknown"} from ${message.author?.tag}: ${message.content.slice(0, 100)}`);
+    debugLog(`Message in #${channelName ?? "unknown"} from ${message.author?.tag}: ${message.content.slice(0, 100)}`);
 
     const repliedMessage = message.reference?.messageId
       ? await message.channel.messages.fetch(message.reference.messageId).catch(() => null)
@@ -618,10 +633,10 @@ export async function start(): Promise<void> {
 
     if (!prompt) {
       if (mention.mentioned) {
-        log("Skipped: repeated empty mention");
+        debugLog("Skipped: repeated empty mention");
         return;
       }
-      log("Skipped: not a bot mention or reply");
+      debugLog("Skipped: not a bot mention or reply");
       return;
     }
 
@@ -640,10 +655,10 @@ export async function start(): Promise<void> {
         const classified = await classifyIntent(prompt);
         if (classified.command !== "none") {
           command = classifiedToCommand(classified);
-          if (command) log(`Classified as ${command.type}${("harnessName" in command ? `: ${command.harnessName}` : "")}`);
+          if (command) debugLog(`Classified as ${command.type}${("harnessName" in command ? `: ${command.harnessName}` : "")}`);
         }
       } catch (err) {
-        log(`Classification failed, falling through to harness: ${err instanceof Error ? err.message : err}`);
+        debugLog(`Classification failed, falling through to harness: ${err instanceof Error ? err.message : err}`);
       }
     }
 
@@ -663,7 +678,7 @@ export async function start(): Promise<void> {
 
       if (!existsSync(projectDir)) {
         scaffoldProject(projectDir, projectName, channelName, hasMarkdownDefaults ? markdownDefaultsDir : undefined);
-        console.log(`Created project directory: ${projectDir}`);
+        logger.success(`Created project directory: ${projectDir}`);
       } else if (!statSync(projectDir).isDirectory()) {
         await reply(message, `Project path exists but is not a directory: \`${projectDir}\``);
         return;
@@ -759,7 +774,7 @@ export async function start(): Promise<void> {
         });
         await reply(message, "Server-specific bot icon updated.");
       } catch (error) {
-        log(`Icon update failed: ${error instanceof Error ? error.message : error}`);
+        logger.error(`Icon update failed: ${error instanceof Error ? error.message : error}`);
         await reply(message, "Failed to update server-specific bot icon.");
       }
       return;
@@ -789,7 +804,7 @@ export async function start(): Promise<void> {
             channelName,
             hasMarkdownDefaults ? markdownDefaultsDir : undefined,
           );
-          console.log(`Created project directory: ${synthProjectDir}`);
+          logger.success(`Created project directory: ${synthProjectDir}`);
         } else if (!statSync(synthProjectDir).isDirectory()) {
           await reply(message, `Project path exists but is not a directory: \`${synthProjectDir}\``);
           return;
@@ -853,7 +868,7 @@ export async function start(): Promise<void> {
         await reply(message, `Persona set for ${personaRequest.language}:\n\n${generated}`);
       } catch (error) {
         stopTyping();
-        log(`Persona generation error: ${error instanceof Error ? error.message : error}`);
+        logger.error(`Persona generation error: ${error instanceof Error ? error.message : error}`);
         await reply(message, "Failed to generate persona. Try again.");
       }
       return;
@@ -921,8 +936,8 @@ export async function start(): Promise<void> {
       prompt = `[Replying to your previous message: "${quoted}"]\n\n${prompt}`;
     }
 
-    log(`Routed to project: ${projectDir}`);
-    log(`Prompt: ${prompt.slice(0, 200)}`);
+    debugLog(`Routed to project: ${projectDir}`);
+    debugLog(`Prompt: ${prompt.slice(0, 200)}`);
 
     await queue.enqueue(message.channelId, async () => {
       if (!existsSync(projectDir)) {
@@ -951,7 +966,7 @@ export async function start(): Promise<void> {
         });
         harnessPrompt = buildHarnessPromptWithContext(prompt, loadedContext.files);
         lastContextFilesByChannel.set(message.channelId, loadedContext.files.length);
-        log(
+        debugLog(
           "Context files: "
           + loadedContext.files.length
           + ", bytes: "
@@ -959,13 +974,13 @@ export async function start(): Promise<void> {
         );
       } catch (error) {
         lastContextFilesByChannel.delete(message.channelId);
-        log(`Context load error: ${error instanceof Error ? error.message : error}`);
+        logger.error(`Context load error: ${error instanceof Error ? error.message : error}`);
         await reply(message, formatContextLoadError(error));
         return;
       }
 
-      log(`Session: ${previousSessionId ?? "new"}`);
-      log(`Harness: ${harnessName}`);
+      debugLog(`Session: ${previousSessionId ?? "new"}`);
+      debugLog(`Harness: ${harnessName}`);
       const stopTyping = startTypingLoop(message.channel);
 
       const runOpts = {
@@ -975,30 +990,35 @@ export async function start(): Promise<void> {
         permissionLevel,
         policyPath: geminiEditOffPolicyPath,
         timeoutMs: 10 * 60 * 1000,
-        onSpawn: (pid: number) => log(`${driver.name} process started (pid ${pid})`),
+        onSpawn: (pid: number) => debugLog(`${driver.name} process started (pid ${pid})`),
         onEvent: (event: StreamJsonEvent) => {
-          if (event.type) log(`Event: ${event.type}${event.session_id ? ` session=${event.session_id}` : ""}`);
+          if (event.type) debugLog(`Event: ${event.type}${event.session_id ? ` session=${event.session_id}` : ""}`);
           if (event.type === "assistant" && Array.isArray(event.message?.content)) {
             for (const block of event.message!.content) {
               if (block.type === "thinking" && typeof (block as Record<string, unknown>).thinking === "string") {
-                log(`Thinking: ${(block as Record<string, unknown>).thinking}`);
+                debugLog(`Thinking: ${(block as Record<string, unknown>).thinking}`);
               }
             }
           }
         },
         onMalformedJson: (line: string, source: "stdout" | "stderr") => {
-          console.warn(`[malformed-json][${source}] ${line}`);
+          if (source === "stderr") {
+            logger.withTag(source).debug(line);
+            return;
+          }
+
+          logger.withTag(source).warn(`Malformed JSON from stdout: ${line}`);
         },
       };
 
       try {
-        log(`Spawning ${driver.name} process...`);
+        debugLog(`Spawning ${driver.name} process...`);
         let result;
         try {
           result = await runHarness({ ...runOpts, sessionId: previousSessionId });
         } catch (error) {
           if (previousSessionId && error instanceof HarnessProcessError && error.details.some((l) => l.includes("already in use"))) {
-            log("Session in use, retrying without session ID...");
+            logger.warn("Session in use, retrying without session ID...");
             setEditMode(sessions, message.channelId, false);
             result = await runHarness({ ...runOpts, permissionLevel: "off" });
           } else {
@@ -1007,8 +1027,8 @@ export async function start(): Promise<void> {
         }
 
         stopTyping();
-        log(`${driver.name} finished: ${result.output.length} chars, session ${result.sessionId ?? "none"}`);
-        log(`Output:\n${result.output}`);
+        debugLog(`${driver.name} finished: ${result.output.length} chars, session ${result.sessionId ?? "none"}`);
+        debugLog(`Output:\n${result.output}`);
 
         const harnessDisplayName = harnessName.charAt(0).toUpperCase() + harnessName.slice(1);
         const modeLabel = permissionLevel === "yolo" ? "Yolo" : permissionLevel === "edit" ? "Edit on" : "Edit off";
@@ -1016,7 +1036,7 @@ export async function start(): Promise<void> {
         const body = result.output.trim().length > 0 ? result.output.trim() : "No assistant text returned.";
         let output = `${modeHeader}\n${body}`;
 
-        log(`Permission denials: ${JSON.stringify(result.permissionDenials)}`);
+        debugLog(`Permission denials: ${JSON.stringify(result.permissionDenials)}`);
         const hasEditDenial = result.permissionDenials.some(
           (d) => d.includes("Edit") || d.includes("Write"),
         ) || (!editMode && /write_file|run_shell_command|write.*blocked|edit.*blocked|permission.*(?:write|edit)|read.only|sandbox|cannot.*(?:modify|write|edit|create)/i.test(result.output));
@@ -1034,11 +1054,11 @@ export async function start(): Promise<void> {
         if (result.sessionId && driver.isValidSessionId(result.sessionId)) {
           setSession(sessions, message.channelId, result.sessionId);
           saveSessions(paths.sessionsPath, sessions);
-          log(`Session saved: ${result.sessionId}`);
+          debugLog(`Session saved: ${result.sessionId}`);
         }
       } catch (error) {
         stopTyping();
-        log(`${driver.name} error: ${error instanceof Error ? error.message : error}`);
+        logger.error(`${driver.name} error: ${error instanceof Error ? error.message : error}`);
         const formatted = formatCommandError(error);
         const body = `\`\`\`\n${formatted.slice(0, 3900)}\n\`\`\``;
         await reply(message, body);
@@ -1051,7 +1071,7 @@ export async function start(): Promise<void> {
 
 if (import.meta.main) {
   start().catch((error) => {
-    console.error(error instanceof Error ? error.message : error);
+    logger.error(error instanceof Error ? error.message : error);
     process.exit(1);
   });
 }
