@@ -615,9 +615,13 @@ export async function start(): Promise<void> {
       ? await message.channel.messages.fetch(message.reference.messageId).catch(() => null)
       : null;
     const isReplyToBot = repliedMessage?.author?.id === client.user.id;
+    const repliedMentionedBot = repliedMessage
+      ? stripBotMention(repliedMessage.content ?? "", client.user.id, botRoleIds).mentioned
+      : false;
+    const isReplyInThread = isReplyToBot || repliedMentionedBot;
 
     const mention = stripBotMention(message.content, client.user.id, botRoleIds);
-    let prompt = mention.mentioned ? mention.prompt : isReplyToBot ? message.content.trim() : "";
+    let prompt = mention.mentioned ? mention.prompt : isReplyInThread ? message.content.trim() : "";
     const previousHelpShown = emptyMentionHelpShown.has(message.channelId);
     const emptyMentionRule = applyEmptyMentionHelpRule(previousHelpShown, mention.mentioned, prompt);
     if (emptyMentionRule.nextShown) {
@@ -958,7 +962,7 @@ export async function start(): Promise<void> {
 
     // When the user replies to any message, walk up the reply chain
     // (up to 5 messages) so the harness has conversational context.
-    if (command?.type !== "resume" && (isReplyToBot || mention.mentioned) && repliedMessage) {
+    if (command?.type !== "resume" && (isReplyInThread || mention.mentioned) && repliedMessage) {
       const chain: Array<{ author: string; content: string }> = [];
       let current = repliedMessage;
       while (current && chain.length < 5) {
