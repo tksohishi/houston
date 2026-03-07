@@ -118,6 +118,10 @@ describe("parseCommand", () => {
     expect(parseCommand("/cancel")).toEqual({ type: "cancel" });
   });
 
+  test("parses /help", () => {
+    expect(parseCommand("/help")).toEqual({ type: "help" });
+  });
+
   test("parses /setup with project name", () => {
     expect(parseCommand("/setup my-project")).toEqual({ type: "setup", projectName: "my-project" });
     expect(parseCommand("/setup  test-app ")).toEqual({ type: "setup", projectName: "test-app" });

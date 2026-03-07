@@ -43,7 +43,8 @@ export type HoustonCommand =
   | { type: "setup"; projectName: string }
   | { type: "harness"; harnessName: string }
   | { type: "persona"; description: string }
-  | { type: "icon"; clear: boolean };
+  | { type: "icon"; clear: boolean }
+  | { type: "help" };
 
 export function parseCommand(prompt: string): HoustonCommand | null {
   const trimmed = prompt.trim();
@@ -52,6 +53,7 @@ export function parseCommand(prompt: string): HoustonCommand | null {
   if (trimmed === "/status") return { type: "status" };
   if (trimmed === "/resume") return { type: "resume" };
   if (trimmed === "/cancel") return { type: "cancel" };
+  if (trimmed === "/help") return { type: "help" };
   if (trimmed === "/icon") return { type: "icon", clear: false };
   if (trimmed === "/icon clear") return { type: "icon", clear: true };
 
@@ -780,6 +782,16 @@ export async function start(): Promise<void> {
         logger.error(`Icon update failed: ${error instanceof Error ? error.message : error}`);
         await reply(message, "Failed to update server-specific bot icon.");
       }
+      return;
+    }
+
+    // /help command
+    if (command?.type === "help") {
+      const entry = sessions[message.channelId];
+      const isProjectBound = Boolean(entry?.projectDir);
+      const suggested = typeof channelName === "string" ? sanitizeChannelName(channelName) : null;
+      const botName = client.user?.username ?? "Houston";
+      await reply(message, buildEmptyMentionHelp(botName, isProjectBound, suggested));
       return;
     }
 
