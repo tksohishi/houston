@@ -1067,7 +1067,11 @@ export async function start(): Promise<void> {
         signal: abortController.signal,
         onSpawn: (pid: number) => debugLog(`${driver.name} process started (pid ${pid})`),
         onEvent: (event: StreamJsonEvent) => {
-          if (event.type) debugLog(`Event: ${event.type}${event.session_id ? ` session=${event.session_id}` : ""}`);
+          const item = (event as Record<string, unknown>).item as Record<string, unknown> | undefined;
+          const itemDetail = item ? ` ${item.type ?? ""}${item.phase ? ` phase=${item.phase}` : ""}` : "";
+          if (event.type) debugLog(`Event: ${event.type}${itemDetail}${event.session_id ? ` session=${event.session_id}` : ""}`);
+
+          // Claude: log thinking blocks (truncated)
           if (event.type === "assistant" && Array.isArray(event.message?.content)) {
             for (const block of event.message!.content) {
               if (block.type === "thinking" && typeof (block as Record<string, unknown>).thinking === "string") {
@@ -1075,6 +1079,11 @@ export async function start(): Promise<void> {
                 debugLog(`Thinking: (${thinking.length} chars) ${thinking.slice(0, 200)}`);
               }
             }
+          }
+
+          // Codex: log item text preview for agent messages
+          if (event.type === "item.completed" && item?.type === "agent_message" && typeof item.text === "string") {
+            debugLog(`Agent message: (${(item.text as string).length} chars) ${(item.text as string).slice(0, 200)}`);
           }
         },
         onMalformedJson: (line: string, source: "stdout" | "stderr") => {
