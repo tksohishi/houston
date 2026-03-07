@@ -943,21 +943,33 @@ export async function start(): Promise<void> {
         return;
       }
 
-      const cached = entry?.lastOutput?.trim();
-      if (cached) {
-        await reply(message, cached);
-        return;
+      // If replying to a message that mentioned the bot, re-process that prompt
+      if (repliedMentionedBot && repliedMessage) {
+        const originalMention = stripBotMention(repliedMessage.content ?? "", client.user.id, botRoleIds);
+        if (originalMention.prompt) {
+          prompt = originalMention.prompt;
+          command = null;
+          // Fall through to harness execution
+        }
       }
 
-      const harnessName = entry?.harness ?? config.defaultHarness;
-      const driver = getDriver(harnessName);
-      const sessionId = entry?.sessionId || "";
-      if (!sessionId || !driver.isValidSessionId(sessionId)) {
-        await reply(message, "Nothing to resume yet. There is no cached output or active session in this channel.");
-        return;
-      }
+      if (command?.type === "resume") {
+        const cached = entry?.lastOutput?.trim();
+        if (cached) {
+          await reply(message, cached);
+          return;
+        }
 
-      prompt = RESUME_PROMPT;
+        const harnessName = entry?.harness ?? config.defaultHarness;
+        const driver = getDriver(harnessName);
+        const sessionId = entry?.sessionId || "";
+        if (!sessionId || !driver.isValidSessionId(sessionId)) {
+          await reply(message, "Nothing to resume yet. There is no cached output or active session in this channel.");
+          return;
+        }
+
+        prompt = RESUME_PROMPT;
+      }
     }
 
     // When the user replies to any message, walk up the reply chain
