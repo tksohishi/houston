@@ -618,7 +618,11 @@ export async function start(): Promise<void> {
     const repliedMentionedBot = repliedMessage
       ? stripBotMention(repliedMessage.content ?? "", client.user.id, botRoleIds).mentioned
       : false;
-    const isReplyInThread = isReplyToBot || repliedMentionedBot;
+    // One hop: replied-to message was itself a reply to the bot
+    const repliedIsReplyToBot = !isReplyToBot && !repliedMentionedBot && repliedMessage?.reference?.messageId
+      ? (await message.channel.messages.fetch(repliedMessage.reference.messageId).catch(() => null))?.author?.id === client.user.id
+      : false;
+    const isReplyInThread = isReplyToBot || repliedMentionedBot || repliedIsReplyToBot;
 
     const mention = stripBotMention(message.content, client.user.id, botRoleIds);
     let prompt = mention.mentioned ? mention.prompt : isReplyInThread ? message.content.trim() : "";
@@ -943,13 +947,25 @@ export async function start(): Promise<void> {
         return;
       }
 
-      // If replying to a message that mentioned the bot, re-process that prompt
-      if (repliedMentionedBot && repliedMessage) {
-        const originalMention = stripBotMention(repliedMessage.content ?? "", client.user.id, botRoleIds);
-        if (originalMention.prompt) {
-          prompt = originalMention.prompt;
+      // If replying to a message that was directed at the bot, re-process it
+      if (repliedMessage) {
+        let reprocessPrompt: string | null = null;
+
+        if (repliedMentionedBot) {
+          // Replied-to message @mentioned the bot
+          const originalMention = stripBotMention(repliedMessage.content ?? "", client.user.id, botRoleIds);
+          reprocessPrompt = originalMention.prompt || null;
+        } else if (repliedMessage.reference?.messageId) {
+          // One hop: replied-to message was itself a reply to the bot
+          const parentMsg = await message.channel.messages.fetch(repliedMessage.reference.messageId).catch(() => null);
+          if (parentMsg?.author?.id === client.user.id) {
+            reprocessPrompt = repliedMessage.content?.trim() || null;
+          }
+        }
+
+        if (reprocessPrompt) {
+          prompt = reprocessPrompt;
           command = null;
-          // Fall through to harness execution
         }
       }
 
@@ -1055,7 +1071,8 @@ export async function start(): Promise<void> {
           if (event.type === "assistant" && Array.isArray(event.message?.content)) {
             for (const block of event.message!.content) {
               if (block.type === "thinking" && typeof (block as Record<string, unknown>).thinking === "string") {
-                debugLog(`Thinking: ${(block as Record<string, unknown>).thinking}`);
+                const thinking = (block as Record<string, unknown>).thinking as string;
+                debugLog(`Thinking: (${thinking.length} chars) ${thinking.slice(0, 200)}`);
               }
             }
           }
