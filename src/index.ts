@@ -1057,6 +1057,10 @@ export async function start(): Promise<void> {
       const abortController = new AbortController();
       queue.setAbort(message.channelId, abortController);
 
+      let harnessEvents = 0;
+      let harnessOutputChars = 0;
+      const harnessStartedAt = Date.now();
+
       const runOpts = {
         prompt: harnessPrompt,
         projectDir,
@@ -1067,6 +1071,9 @@ export async function start(): Promise<void> {
         signal: abortController.signal,
         onSpawn: (pid: number) => debugLog(`${driver.name} process started (pid ${pid})`),
         onEvent: (event: StreamJsonEvent) => {
+          harnessEvents += 1;
+          const text = driver.extractAssistantText(event as Record<string, unknown>);
+          if (text) harnessOutputChars += text.length;
           for (const line of driver.summarizeEvent(event as Record<string, unknown>)) {
             debugLog(line);
           }
@@ -1080,6 +1087,11 @@ export async function start(): Promise<void> {
           logger.withTag(source).warn(`Malformed JSON from stdout: ${line}`);
         },
       };
+
+      const heartbeat = setInterval(() => {
+        const elapsed = Math.floor((Date.now() - harnessStartedAt) / 1000);
+        debugLog(`Heartbeat: ${elapsed}s elapsed, ${harnessEvents} events, ${harnessOutputChars} output chars`);
+      }, 30_000);
 
       try {
         debugLog(`Spawning ${driver.name} process...`);
@@ -1145,6 +1157,7 @@ export async function start(): Promise<void> {
         const body = `\`\`\`\n${formatted.slice(0, 3900)}\n\`\`\``;
         await reply(message, body);
       } finally {
+        clearInterval(heartbeat);
         queue.clearAbort(message.channelId);
       }
     });
