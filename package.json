@@ -6,7 +6,7 @@
   "scripts": {
     "bootstrap": "bash scripts/bootstrap.sh",
     "start": "bun run src/index.ts",
-    "dev": "pkill -f 'bun.*src/index.ts' 2>/dev/null; bun --watch run src/index.ts --verbose",
+    "dev": "script -q tmp/dev.log bun --watch run src/index.ts --verbose",
     "setup": "bun run scripts/setup.ts",
     "reset": "bun run scripts/setup.ts --reset-only",
     "test": "bun test",
