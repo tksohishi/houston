@@ -39,6 +39,7 @@ export type HoustonCommand =
   | { type: "edit"; enabled: boolean }
   | { type: "status" }
   | { type: "resume" }
+  | { type: "cancel" }
   | { type: "setup"; projectName: string }
   | { type: "harness"; harnessName: string }
   | { type: "persona"; description: string }
@@ -50,6 +51,7 @@ export function parseCommand(prompt: string): HoustonCommand | null {
   if (trimmed === "/edit off") return { type: "edit", enabled: false };
   if (trimmed === "/status") return { type: "status" };
   if (trimmed === "/resume") return { type: "resume" };
+  if (trimmed === "/cancel") return { type: "cancel" };
   if (trimmed === "/icon") return { type: "icon", clear: false };
   if (trimmed === "/icon clear") return { type: "icon", clear: true };
 
@@ -131,7 +133,7 @@ export function buildEmptyMentionHelp(
 
   return [
     `Hi, I am ${botName}.`,
-    "Commands: `/status`, `/resume`, `/harness claude|codex|gemini`, `/edit on|off`, `/persona [lang:] <description>`, `/icon`, `/icon clear`.",
+    "Commands: `/status`, `/resume`, `/cancel`, `/harness claude|codex|gemini`, `/edit on|off`, `/persona [lang:] <description>`, `/icon`, `/icon clear`.",
   ].join("\n");
 }
 
@@ -781,6 +783,18 @@ export async function start(): Promise<void> {
       return;
     }
 
+    // /cancel command: abort a running harness
+    if (command?.type === "cancel") {
+      const controller = queue.getAbort(message.channelId);
+      if (controller) {
+        controller.abort();
+        await reply(message, "Cancelling...");
+      } else {
+        await reply(message, "Nothing to cancel.");
+      }
+      return;
+    }
+
     // Check if channel is bound to a project
     const entry = sessions[message.channelId];
     const projectDir = entry?.projectDir;
@@ -930,11 +944,23 @@ export async function start(): Promise<void> {
       prompt = RESUME_PROMPT;
     }
 
-    // When the user replies to a specific bot message, prepend its content
-    // so the harness knows what "this", "that", etc. refer to.
-    if (command?.type !== "resume" && isReplyToBot && repliedMessage?.content) {
-      const quoted = repliedMessage.content.slice(0, 1000);
-      prompt = `[Replying to your previous message: "${quoted}"]\n\n${prompt}`;
+    // When the user replies to a bot message, walk up the reply chain
+    // (up to 5 messages) so the harness has conversational context.
+    if (command?.type !== "resume" && isReplyToBot && repliedMessage) {
+      const chain: Array<{ author: string; content: string }> = [];
+      let current = repliedMessage;
+      while (current && chain.length < 5) {
+        const content = current.content?.trim();
+        if (!content) break;
+        const isBot = current.author?.id === client.user.id;
+        chain.unshift({ author: isBot ? "assistant" : "user", content: content.slice(0, 1000) });
+        if (!current.reference?.messageId) break;
+        current = await message.channel.messages.fetch(current.reference.messageId).catch(() => null);
+      }
+      if (chain.length > 0) {
+        const context = chain.map((m) => `[${m.author}]: ${m.content}`).join("\n\n");
+        prompt = `[Conversation context (oldest first):\n${context}]\n\n${prompt}`;
+      }
     }
 
     debugLog(`Routed to project: ${projectDir}`);
@@ -984,6 +1010,9 @@ export async function start(): Promise<void> {
       debugLog(`Harness: ${harnessName}`);
       const stopTyping = startTypingLoop(message.channel);
 
+      const abortController = new AbortController();
+      queue.setAbort(message.channelId, abortController);
+
       const runOpts = {
         prompt: harnessPrompt,
         projectDir,
@@ -991,6 +1020,7 @@ export async function start(): Promise<void> {
         permissionLevel,
         policyPath: geminiEditOffPolicyPath,
         timeoutMs: 10 * 60 * 1000,
+        signal: abortController.signal,
         onSpawn: (pid: number) => debugLog(`${driver.name} process started (pid ${pid})`),
         onEvent: (event: StreamJsonEvent) => {
           if (event.type) debugLog(`Event: ${event.type}${event.session_id ? ` session=${event.session_id}` : ""}`);
@@ -1031,6 +1061,18 @@ export async function start(): Promise<void> {
         debugLog(`${driver.name} finished: ${result.output.length} chars, session ${result.sessionId ?? "none"}`);
         debugLog(`Output:\n${result.output}`);
 
+        if (result.aborted) {
+          const body = result.output.trim().length > 0 ? result.output.trim() : "No output produced before cancellation.";
+          const output = `Cancelled.\n${body}`;
+          await reply(message, output);
+
+          if (result.sessionId && driver.isValidSessionId(result.sessionId)) {
+            setSession(sessions, message.channelId, result.sessionId);
+            saveSessions(paths.sessionsPath, sessions);
+          }
+          return;
+        }
+
         const harnessDisplayName = harnessName.charAt(0).toUpperCase() + harnessName.slice(1);
         const modeLabel = permissionLevel === "yolo" ? "Yolo" : permissionLevel === "edit" ? "Edit on" : "Edit off";
         const modeHeader = `🤖 ${harnessDisplayName} | ✍️ ${modeLabel}`;
@@ -1063,6 +1105,8 @@ export async function start(): Promise<void> {
         const formatted = formatCommandError(error);
         const body = `\`\`\`\n${formatted.slice(0, 3900)}\n\`\`\``;
         await reply(message, body);
+      } finally {
+        queue.clearAbort(message.channelId);
       }
     });
   });

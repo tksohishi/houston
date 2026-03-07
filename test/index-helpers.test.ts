@@ -114,6 +114,10 @@ describe("parseCommand", () => {
     expect(parseCommand("/resume")).toEqual({ type: "resume" });
   });
 
+  test("parses /cancel", () => {
+    expect(parseCommand("/cancel")).toEqual({ type: "cancel" });
+  });
+
   test("parses /setup with project name", () => {
     expect(parseCommand("/setup my-project")).toEqual({ type: "setup", projectName: "my-project" });
     expect(parseCommand("/setup  test-app ")).toEqual({ type: "setup", projectName: "test-app" });
@@ -357,6 +361,7 @@ describe("empty mention help message", () => {
     const output = buildEmptyMentionHelp("Houston", true, null);
     expect(output).toContain("Commands:");
     expect(output).toContain("/status");
+    expect(output).toContain("/cancel");
     expect(output).toContain("/icon clear");
   });
 });

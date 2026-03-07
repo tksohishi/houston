@@ -36,6 +36,7 @@ export interface HarnessRunOptions {
   onSpawn?: (pid: number) => void;
   onEvent?: (event: StreamJsonEvent) => void | Promise<void>;
   onMalformedJson?: (line: string, source: "stdout" | "stderr") => void;
+  signal?: AbortSignal;
 }
 
 export interface HarnessRunResult {
@@ -46,6 +47,7 @@ export interface HarnessRunResult {
   malformedLines: number;
   errorLines: string[];
   permissionDenials: string[];
+  aborted: boolean;
 }
 
 export interface LineBufferState {
@@ -166,10 +168,23 @@ export async function runHarness(options: HarnessRunOptions): Promise<HarnessRun
   }
 
   let timeoutTriggered = false;
+  let aborted = false;
   const timeout = setTimeout(() => {
     timeoutTriggered = true;
     processHandle.kill();
   }, timeoutMs);
+
+  if (options.signal) {
+    const onAbort = () => {
+      aborted = true;
+      processHandle.kill();
+    };
+    if (options.signal.aborted) {
+      onAbort();
+    } else {
+      options.signal.addEventListener("abort", onAbort, { once: true });
+    }
+  }
 
   let output = "";
   let eventsSeen = 0;
@@ -279,6 +294,19 @@ export async function runHarness(options: HarnessRunOptions): Promise<HarnessRun
       throw new HarnessTimeoutError(timeoutMs);
     }
 
+    if (aborted) {
+      return {
+        exitCode,
+        sessionId,
+        output,
+        eventsSeen,
+        malformedLines,
+        errorLines,
+        permissionDenials,
+        aborted: true,
+      };
+    }
+
     if (exitCode !== 0) {
       throw new HarnessProcessError(`${driver.name} exited with a non zero code`, exitCode, errorLines);
     }
@@ -291,6 +319,7 @@ export async function runHarness(options: HarnessRunOptions): Promise<HarnessRun
       malformedLines,
       errorLines,
       permissionDenials,
+      aborted: false,
     };
   } finally {
     clearTimeout(timeout);

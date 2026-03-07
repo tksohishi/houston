@@ -9,6 +9,19 @@ interface QueuedItem<T> {
 export class ChannelQueue {
   private readonly queues = new Map<string, Array<QueuedItem<unknown>>>();
   private readonly runningChannels = new Set<string>();
+  private readonly abortControllers = new Map<string, AbortController>();
+
+  setAbort(channelId: string, controller: AbortController): void {
+    this.abortControllers.set(channelId, controller);
+  }
+
+  getAbort(channelId: string): AbortController | undefined {
+    return this.abortControllers.get(channelId);
+  }
+
+  clearAbort(channelId: string): void {
+    this.abortControllers.delete(channelId);
+  }
 
   enqueue<T>(channelId: string, task: QueueTask<T>): Promise<T> {
     const queue = this.queues.get(channelId) ?? [];
