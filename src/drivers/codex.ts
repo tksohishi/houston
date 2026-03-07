@@ -103,12 +103,25 @@ export const codexDriver: HarnessDriver = {
   summarizeEvent(event) {
     const lines: string[] = [];
     const type = event.type as string | undefined;
-    const item = event.item as { type?: string; phase?: string; text?: string } | undefined;
-    const itemDetail = item ? ` ${item.type ?? ""}${item.phase ? ` phase=${item.phase}` : ""}` : "";
+    const item = event.item as Record<string, unknown> | undefined;
+    const itemType = item?.type as string | undefined;
+    const phase = item?.phase as string | undefined;
+    const itemDetail = itemType ? ` ${itemType}${phase ? ` phase=${phase}` : ""}` : "";
     if (type) lines.push(`Event: ${type}${itemDetail}`);
 
-    if (type === "item.completed" && item?.type === "agent_message" && typeof item.text === "string") {
-      lines.push(`Agent message: (${item.text.length} chars) ${item.text.slice(0, 200)}`);
+    if (type === "item.completed" && itemType === "agent_message" && typeof item?.text === "string") {
+      lines.push(`Agent message: (${item.text.length} chars) ${(item.text as string).slice(0, 200)}`);
+    }
+
+    if (itemType === "command_execution" && typeof item?.command === "string") {
+      lines.push(`Command: ${(item.command as string).slice(0, 200)}`);
+    }
+
+    if (itemType === "web_search" || itemType === "web_search_result") {
+      const query = item?.query as string | undefined;
+      const url = item?.url as string | undefined;
+      if (query) lines.push(`Web search: ${query.slice(0, 200)}`);
+      if (url) lines.push(`URL: ${(url as string).slice(0, 200)}`);
     }
 
     return lines;
