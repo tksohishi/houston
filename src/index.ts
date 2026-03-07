@@ -956,9 +956,9 @@ export async function start(): Promise<void> {
       prompt = RESUME_PROMPT;
     }
 
-    // When the user replies to a bot message, walk up the reply chain
+    // When the user replies to any message, walk up the reply chain
     // (up to 5 messages) so the harness has conversational context.
-    if (command?.type !== "resume" && isReplyToBot && repliedMessage) {
+    if (command?.type !== "resume" && (isReplyToBot || mention.mentioned) && repliedMessage) {
       const chain: Array<{ author: string; content: string }> = [];
       let current = repliedMessage;
       while (current && chain.length < 5) {
