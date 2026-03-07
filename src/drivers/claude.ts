@@ -93,4 +93,22 @@ export const claudeDriver: HarnessDriver = {
   isValidSessionId(value) {
     return UUID_REGEX.test(value);
   },
+
+  summarizeEvent(event) {
+    const lines: string[] = [];
+    const type = event.type as string | undefined;
+    const sid = event.session_id as string | undefined;
+    if (type) lines.push(`Event: ${type}${sid ? ` session=${sid}` : ""}`);
+
+    if (type === "assistant") {
+      const message = event.message as { content?: Array<{ type?: string; text?: string; thinking?: string }> } | undefined;
+      for (const block of message?.content ?? []) {
+        if (block.type === "thinking" && typeof block.thinking === "string") {
+          lines.push(`Thinking: (${block.thinking.length} chars) ${block.thinking.slice(0, 200)}`);
+        }
+      }
+    }
+
+    return lines;
+  },
 };

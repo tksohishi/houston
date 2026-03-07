@@ -99,4 +99,18 @@ export const codexDriver: HarnessDriver = {
   isValidSessionId(value) {
     return UUID_REGEX.test(value);
   },
+
+  summarizeEvent(event) {
+    const lines: string[] = [];
+    const type = event.type as string | undefined;
+    const item = event.item as { type?: string; phase?: string; text?: string } | undefined;
+    const itemDetail = item ? ` ${item.type ?? ""}${item.phase ? ` phase=${item.phase}` : ""}` : "";
+    if (type) lines.push(`Event: ${type}${itemDetail}`);
+
+    if (type === "item.completed" && item?.type === "agent_message" && typeof item.text === "string") {
+      lines.push(`Agent message: (${item.text.length} chars) ${item.text.slice(0, 200)}`);
+    }
+
+    return lines;
+  },
 };

@@ -83,4 +83,12 @@ export const geminiDriver: HarnessDriver = {
     if (/^\d+$/.test(value)) return true;
     return UUID_REGEX.test(value);
   },
+
+  summarizeEvent(event) {
+    const lines: string[] = [];
+    const type = event.type as string | undefined;
+    const sid = event.session_id as string | undefined;
+    if (type) lines.push(`Event: ${type}${sid ? ` session=${sid}` : ""}`);
+    return lines;
+  },
 };

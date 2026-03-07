@@ -13,6 +13,7 @@ export interface HarnessDriver {
   extractErrors(event: Record<string, unknown>): string[];
   extractPermissionDenials(event: Record<string, unknown>): string[];
   isValidSessionId(value: string): boolean;
+  summarizeEvent(event: Record<string, unknown>): string[];
 }
 
 export interface StreamJsonEvent {
